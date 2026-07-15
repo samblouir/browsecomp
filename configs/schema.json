@@ -1,0 +1,856 @@
+{
+  "$defs": {
+    "AgentConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "max_steps": {
+          "default": 80,
+          "minimum": 1,
+          "title": "Max Steps",
+          "type": "integer"
+        },
+        "max_search_calls": {
+          "default": 40,
+          "minimum": 0,
+          "title": "Max Search Calls",
+          "type": "integer"
+        },
+        "max_page_opens": {
+          "default": 100,
+          "minimum": 0,
+          "title": "Max Page Opens",
+          "type": "integer"
+        },
+        "max_find_calls": {
+          "default": 80,
+          "minimum": 0,
+          "title": "Max Find Calls",
+          "type": "integer"
+        },
+        "max_retrieved_chars": {
+          "default": 2000000,
+          "minimum": 1000,
+          "title": "Max Retrieved Chars",
+          "type": "integer"
+        },
+        "max_history_chars": {
+          "default": 500000,
+          "minimum": 10000,
+          "title": "Max History Chars",
+          "type": "integer"
+        },
+        "parse_retries": {
+          "default": 2,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Parse Retries",
+          "type": "integer"
+        },
+        "require_citations": {
+          "default": true,
+          "title": "Require Citations",
+          "type": "boolean"
+        },
+        "enable_search_many": {
+          "default": true,
+          "title": "Enable Search Many",
+          "type": "boolean"
+        },
+        "enable_open_many": {
+          "default": true,
+          "title": "Enable Open Many",
+          "type": "boolean"
+        },
+        "max_batch_size": {
+          "default": 5,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Max Batch Size",
+          "type": "integer"
+        },
+        "automatic_external_after_search_calls": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Automatic External After Search Calls",
+          "type": "integer"
+        },
+        "automatic_external_requests": {
+          "default": 3,
+          "maximum": 4,
+          "minimum": 1,
+          "title": "Automatic External Requests",
+          "type": "integer"
+        },
+        "system_prompt_path": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "System Prompt Path"
+        }
+      },
+      "title": "AgentConfig",
+      "type": "object"
+    },
+    "BrowserConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "default": "direct",
+          "enum": [
+            "direct",
+            "playwright",
+            "auto"
+          ],
+          "title": "Backend",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 30,
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        },
+        "max_redirects": {
+          "default": 5,
+          "maximum": 20,
+          "minimum": 0,
+          "title": "Max Redirects",
+          "type": "integer"
+        },
+        "max_response_bytes": {
+          "default": 8000000,
+          "minimum": 100000,
+          "title": "Max Response Bytes",
+          "type": "integer"
+        },
+        "max_text_chars_per_open": {
+          "default": 30000,
+          "minimum": 1000,
+          "title": "Max Text Chars Per Open",
+          "type": "integer"
+        },
+        "max_links_per_page": {
+          "default": 80,
+          "maximum": 1000,
+          "minimum": 0,
+          "title": "Max Links Per Page",
+          "type": "integer"
+        },
+        "user_agent": {
+          "default": "BrowseComp250-ResearchRunner/0.1",
+          "title": "User Agent",
+          "type": "string"
+        },
+        "block_private_networks": {
+          "default": true,
+          "title": "Block Private Networks",
+          "type": "boolean"
+        },
+        "allow_nonstandard_ports": {
+          "default": false,
+          "title": "Allow Nonstandard Ports",
+          "type": "boolean"
+        },
+        "cache_mode": {
+          "default": "readwrite",
+          "enum": [
+            "off",
+            "read",
+            "write",
+            "readwrite",
+            "refresh"
+          ],
+          "title": "Cache Mode",
+          "type": "string"
+        },
+        "cache_path": {
+          "default": "~/.cache/browsecomp250/page-cache.sqlite3",
+          "format": "path",
+          "title": "Cache Path",
+          "type": "string"
+        }
+      },
+      "title": "BrowserConfig",
+      "type": "object"
+    },
+    "DatasetConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "source_url": {
+          "default": "https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv",
+          "title": "Source Url",
+          "type": "string"
+        },
+        "cache_dir": {
+          "default": "~/.cache/browsecomp250",
+          "format": "path",
+          "title": "Cache Dir",
+          "type": "string"
+        },
+        "expected_rows": {
+          "default": 1266,
+          "title": "Expected Rows",
+          "type": "integer"
+        },
+        "expected_sha256": {
+          "default": "",
+          "title": "Expected Sha256",
+          "type": "string"
+        },
+        "subset_indices_path": {
+          "default": "/home/sam/browsecomp-250-star/data/subset_indices.json",
+          "format": "path",
+          "title": "Subset Indices Path",
+          "type": "string"
+        },
+        "subset_size": {
+          "default": 250,
+          "title": "Subset Size",
+          "type": "integer"
+        }
+      },
+      "title": "DatasetConfig",
+      "type": "object"
+    },
+    "ExternalModelConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "api_url": {
+          "default": "http://127.0.0.1:8000/api/external-model-requests",
+          "title": "Api Url",
+          "type": "string"
+        },
+        "admin_token": {
+          "default": "",
+          "title": "Admin Token",
+          "type": "string"
+        },
+        "default_provider": {
+          "default": "chatgpt",
+          "enum": [
+            "chatgpt",
+            "openai",
+            "anthropic",
+            "gemini",
+            "openrouter",
+            "mock"
+          ],
+          "title": "Default Provider",
+          "type": "string"
+        },
+        "allowed_providers": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Providers",
+          "type": "array"
+        },
+        "default_model": {
+          "default": "",
+          "title": "Default Model",
+          "type": "string"
+        },
+        "temperature": {
+          "default": 0.7,
+          "maximum": 1.0,
+          "minimum": 0.3,
+          "title": "Temperature",
+          "type": "number"
+        },
+        "top_p": {
+          "default": 0.95,
+          "exclusiveMinimum": 0,
+          "maximum": 1.0,
+          "title": "Top P",
+          "type": "number"
+        },
+        "max_output_tokens": {
+          "default": 16384,
+          "maximum": 32768,
+          "minimum": 16384,
+          "title": "Max Output Tokens",
+          "type": "integer"
+        },
+        "max_calls_per_task": {
+          "default": 8,
+          "maximum": 64,
+          "minimum": 0,
+          "title": "Max Calls Per Task",
+          "type": "integer"
+        },
+        "max_batch_size": {
+          "default": 4,
+          "maximum": 4,
+          "minimum": 1,
+          "title": "Max Batch Size",
+          "type": "integer"
+        },
+        "max_concurrency": {
+          "default": 4,
+          "maximum": 16,
+          "minimum": 1,
+          "title": "Max Concurrency",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 900,
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        },
+        "max_retries": {
+          "default": 2,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        }
+      },
+      "title": "ExternalModelConfig",
+      "type": "object"
+    },
+    "GraderConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "default": "official_llm",
+          "enum": [
+            "official_llm",
+            "deterministic",
+            "both"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "api_base": {
+          "default": "https://api.openai.com/v1",
+          "title": "Api Base",
+          "type": "string"
+        },
+        "api_key": {
+          "default": "",
+          "title": "Api Key",
+          "type": "string"
+        },
+        "allow_empty_api_key": {
+          "default": false,
+          "title": "Allow Empty Api Key",
+          "type": "boolean"
+        },
+        "model": {
+          "default": "gpt-5.6",
+          "title": "Model",
+          "type": "string"
+        },
+        "extra_headers_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          ],
+          "title": "Extra Headers Json"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "minimum": 0.3,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.3,
+          "title": "Temperature"
+        },
+        "max_output_tokens": {
+          "default": 16384,
+          "minimum": 16384,
+          "title": "Max Output Tokens",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 120,
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        },
+        "max_retries": {
+          "default": 4,
+          "maximum": 20,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "input_price_per_million": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Input Price Per Million",
+          "type": "number"
+        },
+        "output_price_per_million": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Output Price Per Million",
+          "type": "number"
+        },
+        "extra_body": {
+          "additionalProperties": true,
+          "title": "Extra Body",
+          "type": "object"
+        }
+      },
+      "title": "GraderConfig",
+      "type": "object"
+    },
+    "ModelConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "api_base": {
+          "title": "Api Base",
+          "type": "string"
+        },
+        "api_key": {
+          "default": "",
+          "title": "Api Key",
+          "type": "string"
+        },
+        "allow_empty_api_key": {
+          "default": false,
+          "title": "Allow Empty Api Key",
+          "type": "boolean"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "extra_headers_json": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          ],
+          "title": "Extra Headers Json"
+        },
+        "protocol": {
+          "default": "json",
+          "enum": [
+            "json",
+            "tools",
+            "auto"
+          ],
+          "title": "Protocol",
+          "type": "string"
+        },
+        "temperature": {
+          "anyOf": [
+            {
+              "minimum": 0.3,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.3,
+          "title": "Temperature"
+        },
+        "max_output_tokens": {
+          "default": 16384,
+          "minimum": 16384,
+          "title": "Max Output Tokens",
+          "type": "integer"
+        },
+        "timeout_seconds": {
+          "default": 300,
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        },
+        "max_retries": {
+          "default": 4,
+          "maximum": 20,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "response_chain": {
+          "default": false,
+          "title": "Response Chain",
+          "type": "boolean"
+        },
+        "input_price_per_million": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Input Price Per Million",
+          "type": "number"
+        },
+        "output_price_per_million": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Output Price Per Million",
+          "type": "number"
+        },
+        "extra_body": {
+          "additionalProperties": true,
+          "title": "Extra Body",
+          "type": "object"
+        }
+      },
+      "required": [
+        "api_base",
+        "model"
+      ],
+      "title": "ModelConfig",
+      "type": "object"
+    },
+    "ReportConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence_level": {
+          "default": 0.95,
+          "exclusiveMaximum": 1,
+          "exclusiveMinimum": 0,
+          "title": "Confidence Level",
+          "type": "number"
+        },
+        "bootstrap_samples": {
+          "default": 10000,
+          "minimum": 100,
+          "title": "Bootstrap Samples",
+          "type": "integer"
+        },
+        "write_html": {
+          "default": true,
+          "title": "Write Html",
+          "type": "boolean"
+        },
+        "write_csv": {
+          "default": true,
+          "title": "Write Csv",
+          "type": "boolean"
+        },
+        "public_report_omits_questions": {
+          "default": true,
+          "title": "Public Report Omits Questions",
+          "type": "boolean"
+        },
+        "public_report_omits_answers": {
+          "default": true,
+          "title": "Public Report Omits Answers",
+          "type": "boolean"
+        }
+      },
+      "title": "ReportConfig",
+      "type": "object"
+    },
+    "RunConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "default": "browsecomp250",
+          "title": "Name",
+          "type": "string"
+        },
+        "output_dir": {
+          "default": "runs",
+          "format": "path",
+          "title": "Output Dir",
+          "type": "string"
+        },
+        "seed": {
+          "default": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
+        "concurrency": {
+          "default": 1,
+          "maximum": 256,
+          "minimum": 1,
+          "title": "Concurrency",
+          "type": "integer"
+        },
+        "attempts": {
+          "default": 1,
+          "maximum": 64,
+          "minimum": 1,
+          "title": "Attempts",
+          "type": "integer"
+        },
+        "shuffle": {
+          "default": true,
+          "title": "Shuffle",
+          "type": "boolean"
+        },
+        "resume": {
+          "default": true,
+          "title": "Resume",
+          "type": "boolean"
+        },
+        "fail_fast": {
+          "default": false,
+          "title": "Fail Fast",
+          "type": "boolean"
+        },
+        "task_timeout_seconds": {
+          "default": 1800,
+          "exclusiveMinimum": 0,
+          "title": "Task Timeout Seconds",
+          "type": "number"
+        },
+        "write_private_transcripts": {
+          "default": true,
+          "title": "Write Private Transcripts",
+          "type": "boolean"
+        }
+      },
+      "title": "RunConfig",
+      "type": "object"
+    },
+    "SearchConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "default": "brave",
+          "enum": [
+            "brave",
+            "google_chrome",
+            "hybrid",
+            "tavily",
+            "serper",
+            "searxng"
+          ],
+          "title": "Provider",
+          "type": "string"
+        },
+        "results_per_call": {
+          "default": 10,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Results Per Call",
+          "type": "integer"
+        },
+        "country": {
+          "default": "US",
+          "title": "Country",
+          "type": "string"
+        },
+        "language": {
+          "default": "en",
+          "title": "Language",
+          "type": "string"
+        },
+        "safe_search": {
+          "default": "moderate",
+          "enum": [
+            "off",
+            "moderate",
+            "strict"
+          ],
+          "title": "Safe Search",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 30,
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        },
+        "max_retries": {
+          "default": 4,
+          "maximum": 20,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "cache_mode": {
+          "default": "readwrite",
+          "enum": [
+            "off",
+            "read",
+            "write",
+            "readwrite",
+            "refresh"
+          ],
+          "title": "Cache Mode",
+          "type": "string"
+        },
+        "cache_path": {
+          "default": "~/.cache/browsecomp250/search-cache.sqlite3",
+          "format": "path",
+          "title": "Cache Path",
+          "type": "string"
+        },
+        "brave_api_key": {
+          "default": "",
+          "title": "Brave Api Key",
+          "type": "string"
+        },
+        "tavily_api_key": {
+          "default": "",
+          "title": "Tavily Api Key",
+          "type": "string"
+        },
+        "serper_api_key": {
+          "default": "",
+          "title": "Serper Api Key",
+          "type": "string"
+        },
+        "searxng_base_url": {
+          "default": "http://127.0.0.1:8080",
+          "title": "Searxng Base Url",
+          "type": "string"
+        },
+        "google_chrome_host": {
+          "default": "",
+          "title": "Google Chrome Host",
+          "type": "string"
+        },
+        "google_chrome_ssh_bin": {
+          "default": "ssh",
+          "title": "Google Chrome Ssh Bin",
+          "type": "string"
+        },
+        "google_chrome_scp_bin": {
+          "default": "scp",
+          "title": "Google Chrome Scp Bin",
+          "type": "string"
+        },
+        "google_chrome_python_bin": {
+          "default": "python3",
+          "title": "Google Chrome Python Bin",
+          "type": "string"
+        },
+        "google_chrome_cua_driver": {
+          "default": "~/.star-hermes/bin/cua-driver",
+          "title": "Google Chrome Cua Driver",
+          "type": "string"
+        },
+        "google_chrome_bundle_id": {
+          "default": "com.google.Chrome",
+          "title": "Google Chrome Bundle Id",
+          "type": "string"
+        },
+        "google_chrome_max_fanout": {
+          "default": 8,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Google Chrome Max Fanout",
+          "type": "integer"
+        },
+        "google_chrome_timeout_seconds": {
+          "default": 45,
+          "exclusiveMinimum": 0,
+          "maximum": 300,
+          "title": "Google Chrome Timeout Seconds",
+          "type": "number"
+        },
+        "google_chrome_connect_timeout_seconds": {
+          "default": 5,
+          "maximum": 60,
+          "minimum": 1,
+          "title": "Google Chrome Connect Timeout Seconds",
+          "type": "integer"
+        },
+        "google_chrome_max_retries": {
+          "default": 0,
+          "maximum": 3,
+          "minimum": 0,
+          "title": "Google Chrome Max Retries",
+          "type": "integer"
+        },
+        "hybrid_mode": {
+          "default": "merge",
+          "enum": [
+            "merge",
+            "google_first",
+            "brave_first"
+          ],
+          "title": "Hybrid Mode",
+          "type": "string"
+        }
+      },
+      "title": "SearchConfig",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "run": {
+      "$ref": "#/$defs/RunConfig"
+    },
+    "dataset": {
+      "$ref": "#/$defs/DatasetConfig"
+    },
+    "model": {
+      "$ref": "#/$defs/ModelConfig"
+    },
+    "search": {
+      "$ref": "#/$defs/SearchConfig"
+    },
+    "browser": {
+      "$ref": "#/$defs/BrowserConfig"
+    },
+    "agent": {
+      "$ref": "#/$defs/AgentConfig"
+    },
+    "external_model": {
+      "$ref": "#/$defs/ExternalModelConfig"
+    },
+    "grader": {
+      "$ref": "#/$defs/GraderConfig"
+    },
+    "report": {
+      "$ref": "#/$defs/ReportConfig"
+    },
+    "config_path": {
+      "anyOf": [
+        {
+          "format": "path",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Config Path"
+    }
+  },
+  "required": [
+    "run",
+    "dataset",
+    "model",
+    "search",
+    "browser",
+    "agent",
+    "grader",
+    "report"
+  ],
+  "title": "AppConfig",
+  "type": "object"
+}

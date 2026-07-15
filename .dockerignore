@@ -1,0 +1,13 @@
+.git
+.venv
+.env
+.pytest_cache
+.ruff_cache
+__pycache__
+*.pyc
+runs
+release
+build
+dist
+*.zip
+browse_comp_test_set.csv

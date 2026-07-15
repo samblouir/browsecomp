@@ -1,0 +1,16 @@
+{
+  "name": "BrowseComp-250",
+  "official": false,
+  "source_benchmark": "BrowseComp",
+  "source_row_count": 1266,
+  "subset_size": 250,
+  "selection": "CPython random.Random(0).sample(range(1266), 250), preserving sampled order",
+  "selection_seed": 0,
+  "indices_sha256": "b0c3334bf37a9ee9eb653639daac477576bce36ec7bcfc5e3ec8ef88c168f4f0",
+  "source_url": "https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv",
+  "notes": [
+    "The official OpenAI reference implementation uses random.Random(0).sample(examples, num_examples) for small runs.",
+    "This repository freezes the resulting indices so selection cannot drift across runtimes.",
+    "The source CSV remains encrypted and is downloaded at runtime; plaintext items are never bundled."
+  ]
+}

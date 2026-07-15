@@ -1,0 +1,15 @@
+# Exact dependency versions used for the final isolated validation environment.
+# Install the project normally with `pip install -e .`; this file records the
+# validated dependency set and is not a substitute for pyproject metadata.
+beautifulsoup4==4.15.0
+cryptography==43.0.0
+httpx==0.28.1
+markdownify==1.2.3
+platformdirs==4.3.7
+pydantic==2.13.4
+pypdf==5.4.0
+python-dotenv==1.2.2
+PyYAML==6.0.3
+rich==15.0.0
+setuptools==83.0.0
+typer==0.26.8

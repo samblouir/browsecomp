@@ -1,0 +1,133 @@
+run:
+  name: browsecomp250-star7-dev-assisted-v1-20260715
+  output_dir: runs
+  seed: 20260715
+  concurrency: 5
+  attempts: 1
+  shuffle: false
+  resume: true
+  fail_fast: false
+  task_timeout_seconds: 1800
+  write_private_transcripts: true
+
+dataset:
+  source_url: https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv
+  cache_dir: ~/.cache/browsecomp250
+  expected_rows: 1266
+  expected_sha256: "${BC250_EXPECTED_DATASET_SHA256:-}"
+  subset_indices_path: data/subset_indices.json
+  subset_size: 250
+
+model:
+  api_base: "${BC250_MODEL_API_BASE:-http://127.0.0.1:8000/agent/v1}"
+  api_key: "${BC250_MODEL_API_KEY:-frontierrl-public}"
+  allow_empty_api_key: false
+  model: "${BC250_MODEL_NAME:-frontierrl/star-7}"
+  extra_headers_json: '${BC250_MODEL_EXTRA_HEADERS:-{}}'
+  protocol: tools
+  temperature: 0.3
+  max_output_tokens: 16384
+  timeout_seconds: 360
+  max_retries: 4
+  response_chain: true
+  input_price_per_million: ${BC250_MODEL_INPUT_PRICE_PER_MILLION:-0}
+  output_price_per_million: ${BC250_MODEL_OUTPUT_PRICE_PER_MILLION:-0}
+  extra_body:
+    top_p: 0.95
+    parallel_tool_calls: false
+    vllm_xargs:
+      frontierrl_max_denoising_steps: 48
+
+search:
+  provider: brave
+  results_per_call: 10
+  country: US
+  language: en
+  safe_search: moderate
+  timeout_seconds: 30
+  max_retries: 4
+  cache_mode: readwrite
+  cache_path: ~/.cache/browsecomp250/search-cache.sqlite3
+  brave_api_key: "${BC250_BRAVE_API_KEY:-}"
+  tavily_api_key: "${BC250_TAVILY_API_KEY:-}"
+  serper_api_key: "${BC250_SERPER_API_KEY:-}"
+  searxng_base_url: "${BC250_SEARXNG_BASE_URL:-http://127.0.0.1:8080}"
+  google_chrome_host: "${BC250_GOOGLE_CHROME_HOST:-sam-mbp-rev}"
+  google_chrome_ssh_bin: "${BC250_GOOGLE_CHROME_SSH_BIN:-ssh}"
+  google_chrome_scp_bin: "${BC250_GOOGLE_CHROME_SCP_BIN:-scp}"
+  google_chrome_python_bin: "${BC250_GOOGLE_CHROME_PYTHON_BIN:-python3}"
+  google_chrome_cua_driver: "${BC250_GOOGLE_CHROME_CUA_DRIVER:-~/.star-hermes/bin/cua-driver}"
+  google_chrome_bundle_id: com.google.Chrome
+  google_chrome_max_fanout: 8
+  google_chrome_timeout_seconds: 45
+  google_chrome_connect_timeout_seconds: 5
+  google_chrome_max_retries: 0
+  hybrid_mode: merge
+
+browser:
+  backend: direct
+  timeout_seconds: 30
+  max_redirects: 5
+  max_response_bytes: 8000000
+  max_text_chars_per_open: 30000
+  max_links_per_page: 80
+  user_agent: BrowseComp250-Star/0.1
+  block_private_networks: true
+  allow_nonstandard_ports: false
+  cache_mode: readwrite
+  cache_path: ~/.cache/browsecomp250/page-cache.sqlite3
+
+agent:
+  max_steps: 80
+  max_search_calls: 40
+  max_page_opens: 100
+  max_find_calls: 80
+  max_retrieved_chars: 2000000
+  max_history_chars: 500000
+  parse_retries: 3
+  require_citations: true
+  enable_search_many: true
+  enable_open_many: true
+  max_batch_size: 7
+  automatic_external_after_search_calls: 8
+  automatic_external_requests: 3
+  system_prompt_path: prompts/star_browsecomp_system.md
+
+external_model:
+  enabled: ${BC250_EXTERNAL_MODEL_ENABLED:-true}
+  api_url: "${BC250_EXTERNAL_MODEL_API_URL:-http://127.0.0.1:8000/api/external-model-requests}"
+  admin_token: "${BC250_EXTERNAL_MODEL_ADMIN_TOKEN:-}"
+  default_provider: "${BC250_EXTERNAL_MODEL_PROVIDER:-chatgpt}"
+  allowed_providers: [chatgpt, openai, anthropic, gemini, openrouter]
+  default_model: "${BC250_EXTERNAL_MODEL_NAME:-}"
+  temperature: 0.7
+  top_p: 0.95
+  max_output_tokens: 16384
+  max_calls_per_task: 8
+  max_batch_size: 4
+  max_concurrency: 4
+  timeout_seconds: 900
+  max_retries: 2
+
+grader:
+  mode: official_llm
+  api_base: "${BC250_GRADER_API_BASE:-https://api.openai.com/v1}"
+  api_key: "${BC250_GRADER_API_KEY:-}"
+  allow_empty_api_key: false
+  model: "${BC250_GRADER_MODEL:-gpt-5.6}"
+  extra_headers_json: '${BC250_GRADER_EXTRA_HEADERS:-{}}'
+  temperature: 0.3
+  max_output_tokens: 16384
+  timeout_seconds: 300
+  max_retries: 4
+  input_price_per_million: ${BC250_GRADER_INPUT_PRICE_PER_MILLION:-0}
+  output_price_per_million: ${BC250_GRADER_OUTPUT_PRICE_PER_MILLION:-0}
+  extra_body: {}
+
+report:
+  confidence_level: 0.95
+  bootstrap_samples: 1000
+  write_html: true
+  write_csv: true
+  public_report_omits_questions: true
+  public_report_omits_answers: true

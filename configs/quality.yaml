@@ -1,0 +1,100 @@
+# Optional higher-compute research profile. Do not compare this score with the
+# single-attempt headline profile without naming the additional test-time compute.
+run:
+  name: browsecomp250-quality
+  output_dir: runs
+  seed: 20260715
+  concurrency: 4
+  attempts: 4
+  shuffle: true
+  resume: true
+  fail_fast: false
+  task_timeout_seconds: 2700
+  write_private_transcripts: true
+
+dataset:
+  source_url: https://openaipublic.blob.core.windows.net/simple-evals/browse_comp_test_set.csv
+  cache_dir: ~/.cache/browsecomp250
+  expected_rows: 1266
+  expected_sha256: "${BC250_EXPECTED_DATASET_SHA256:-}"
+  subset_indices_path: data/subset_indices.json
+  subset_size: 250
+
+model:
+  api_base: "${BC250_MODEL_API_BASE:-http://127.0.0.1:8000/v1}"
+  api_key: "${BC250_MODEL_API_KEY:-}"
+  allow_empty_api_key: ${BC250_ALLOW_EMPTY_MODEL_API_KEY:-false}
+  model: "${BC250_MODEL_NAME:-star}"
+  extra_headers_json: '${BC250_MODEL_EXTRA_HEADERS:-{}}'
+  protocol: json
+  temperature: 0.3
+  max_output_tokens: 16384
+  timeout_seconds: 300
+  max_retries: 4
+  input_price_per_million: ${BC250_MODEL_INPUT_PRICE_PER_MILLION:-0}
+  output_price_per_million: ${BC250_MODEL_OUTPUT_PRICE_PER_MILLION:-0}
+  extra_body: {}
+
+search:
+  provider: "${BC250_SEARCH_PROVIDER:-brave}"
+  results_per_call: 20
+  country: US
+  language: en
+  safe_search: moderate
+  timeout_seconds: 30
+  max_retries: 4
+  cache_mode: readwrite
+  cache_path: ~/.cache/browsecomp250/search-cache.sqlite3
+  brave_api_key: "${BC250_BRAVE_API_KEY:-}"
+  tavily_api_key: "${BC250_TAVILY_API_KEY:-}"
+  serper_api_key: "${BC250_SERPER_API_KEY:-}"
+  searxng_base_url: "${BC250_SEARXNG_BASE_URL:-http://127.0.0.1:8080}"
+
+browser:
+  backend: direct
+  timeout_seconds: 40
+  max_redirects: 6
+  max_response_bytes: 12000000
+  max_text_chars_per_open: 50000
+  max_links_per_page: 120
+  user_agent: BrowseComp250-ResearchRunner/0.1
+  block_private_networks: true
+  allow_nonstandard_ports: false
+  cache_mode: readwrite
+  cache_path: ~/.cache/browsecomp250/page-cache.sqlite3
+
+agent:
+  max_steps: 120
+  max_search_calls: 60
+  max_page_opens: 160
+  max_find_calls: 120
+  max_retrieved_chars: 4000000
+  max_history_chars: 800000
+  parse_retries: 3
+  require_citations: true
+  enable_search_many: true
+  enable_open_many: true
+  max_batch_size: 8
+
+grader:
+  mode: official_llm
+  api_base: "${BC250_GRADER_API_BASE:-https://api.openai.com/v1}"
+  api_key: "${BC250_GRADER_API_KEY:-}"
+  allow_empty_api_key: ${BC250_ALLOW_EMPTY_GRADER_API_KEY:-false}
+  model: "${BC250_GRADER_MODEL:-gpt-5.6}"
+  extra_headers_json: '${BC250_GRADER_EXTRA_HEADERS:-{}}'
+  temperature: 0.3
+  max_output_tokens: 16384
+  timeout_seconds: 120
+  max_retries: 4
+  input_price_per_million: ${BC250_GRADER_INPUT_PRICE_PER_MILLION:-0}
+  output_price_per_million: ${BC250_GRADER_OUTPUT_PRICE_PER_MILLION:-0}
+  extra_body: {}
+
+report:
+  confidence_level: 0.95
+  bootstrap_samples: 10000
+  write_html: true
+  write_csv: true
+  public_report_omits_questions: true
+  public_report_omits_answers: true
