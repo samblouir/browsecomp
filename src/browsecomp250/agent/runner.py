@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from ..browser.extract import page_window
 from ..browser.fetcher import BrowserError, PageFetcher
@@ -31,6 +32,51 @@ _SEARCH_DATE_RANGE = re.compile(
     flags=re.I,
 )
 _SEARCH_TOKEN = re.compile(r"[a-z0-9]+", flags=re.I)
+_LINK_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "article",
+        "at",
+        "by",
+        "for",
+        "from",
+        "in",
+        "into",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "use",
+        "uses",
+        "with",
+    }
+)
+_RESEARCH_LINK_TERMS = frozenset(
+    {
+        "archive",
+        "attribution",
+        "biography",
+        "chronicle",
+        "chronicles",
+        "culture",
+        "discovery",
+        "documented",
+        "documentation",
+        "evidence",
+        "history",
+        "origin",
+        "origins",
+        "primary",
+        "research",
+        "ritual",
+        "source",
+        "study",
+        "traditional",
+    }
+)
 _ABSTENTION_ANSWER = re.compile(
     r"^(?:"
     r"unknown|none|n/?a|inconclusive|undetermined|"
@@ -789,7 +835,10 @@ class AgentRunner:
                         "consultations": consultations,
                         "instruction": (
                             "Use these independent candidate, adversarial, and search-strategy "
-                            "reviews as leads. Verify material claims against public-web evidence."
+                            "reviews as leads. Preserve every viable entity in a candidate-by-clue "
+                            "ledger, marking each clue directly supported, inferred, unknown, or "
+                            "contradicted. Verify material claims against public-web evidence and "
+                            "do not collapse to one entity merely because it was proposed first."
                         ),
                     }
                     remaining_search_budget = max(
@@ -885,12 +934,6 @@ class AgentRunner:
                             notes,
                             request_namespace=chain_namespace,
                         )
-                        for page in external_pages.get("pages") or []:
-                            if isinstance(page, dict) and isinstance(page.get("links"), list):
-                                page["links"] = page["links"][:20]
-                        result["independent_external_consultation"]["source_page_inspection"] = (
-                            external_pages
-                        )
                         deltas = tuple(
                             left + right
                             for left, right in zip(
@@ -909,6 +952,69 @@ class AgentRunner:
                             failed=int(external_pages.get("failed") or 0),
                             retrieved_chars=external_page_deltas[3],
                         )
+                        remaining_related_page_budget = max(
+                            0,
+                            self.agent_config.max_page_opens - page_opens - deltas[1],
+                        )
+                        related_urls = self._related_evidence_urls(
+                            external_pages.get("pages") or [],
+                            queries=consultation_strategy_queries,
+                            opened=opened,
+                            limit=min(
+                                self.agent_config.automatic_page_inspection_count,
+                                remaining_related_page_budget,
+                            ),
+                        )
+                        for page in external_pages.get("pages") or []:
+                            if isinstance(page, dict) and isinstance(page.get("links"), list):
+                                page["links"] = page["links"][:20]
+                        result["independent_external_consultation"]["source_page_inspection"] = (
+                            external_pages
+                        )
+                        if related_urls:
+                            self._emit(
+                                "related_source_inspection_started",
+                                step=step,
+                                url_count=len(related_urls),
+                            )
+                            related_pages, related_page_deltas = await self._execute_action(
+                                AgentAction(
+                                    action="open_many",
+                                    payload={
+                                        "urls": related_urls,
+                                        "max_chars": (
+                                            self.agent_config.automatic_page_inspection_max_chars
+                                        ),
+                                    },
+                                ),
+                                opened,
+                                notes,
+                                request_namespace=chain_namespace,
+                            )
+                            for page in related_pages.get("pages") or []:
+                                if isinstance(page, dict) and isinstance(page.get("links"), list):
+                                    page["links"] = page["links"][:20]
+                            result["independent_external_consultation"][
+                                "related_source_page_inspection"
+                            ] = related_pages
+                            deltas = tuple(
+                                left + right
+                                for left, right in zip(
+                                    deltas,
+                                    related_page_deltas,
+                                    strict=True,
+                                )
+                            )
+                            automatic_page_inspection_succeeded = (
+                                automatic_page_inspection_succeeded or bool(related_pages.get("ok"))
+                            )
+                            self._emit(
+                                "related_source_inspection_completed",
+                                step=step,
+                                succeeded=int(related_pages.get("succeeded") or 0),
+                                failed=int(related_pages.get("failed") or 0),
+                                retrieved_chars=related_page_deltas[3],
+                            )
                     self._emit(
                         "automatic_external_completed",
                         step=step,
@@ -1479,6 +1585,56 @@ class AgentRunner:
         return cls._candidate_urls(result, limit)
 
     @classmethod
+    def _related_evidence_urls(
+        cls,
+        pages: list[dict[str, Any]],
+        *,
+        queries: list[str],
+        opened: dict[str, PageDocument],
+        limit: int,
+    ) -> list[str]:
+        if limit <= 0:
+            return []
+        query_terms = [
+            cls._search_query_terms(query) - _LINK_STOPWORDS for query in queries if query.strip()
+        ]
+        opened_urls = set(opened)
+        ranked: list[tuple[int, int, str]] = []
+        seen: set[str] = set()
+        sequence = 0
+        for page in pages:
+            if not isinstance(page, dict):
+                continue
+            source_url = str(page.get("final_url") or page.get("requested_url") or "")
+            source_host = urlsplit(source_url).hostname or ""
+            links = page.get("links")
+            if not isinstance(links, list):
+                continue
+            for link in links:
+                if not isinstance(link, dict):
+                    continue
+                raw_url = str(link.get("url") or "").strip()
+                parsed = urlsplit(raw_url)
+                if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                    continue
+                url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, ""))
+                if url in seen or url in opened_urls:
+                    continue
+                seen.add(url)
+                text = f"{link.get('text') or ''} {parsed.path.replace('/', ' ')}"
+                terms = cls._search_query_terms(text) - _LINK_STOPWORDS
+                overlap = max((len(terms & item) for item in query_terms), default=0)
+                research_overlap = len(terms & _RESEARCH_LINK_TERMS)
+                same_host = bool(source_host and source_host == (parsed.hostname or ""))
+                if overlap < 2 and not (same_host and research_overlap >= 2):
+                    continue
+                score = overlap * 10 + research_overlap * 3 + int(same_host) * 2
+                ranked.append((-score, sequence, url))
+                sequence += 1
+        ranked.sort()
+        return [url for _, _, url in ranked[:limit]]
+
+    @classmethod
     def _unopened_candidate_urls(
         cls,
         result: dict[str, Any],
@@ -1875,15 +2031,18 @@ class AgentRunner:
                 "Independent candidate investigator",
                 "Resolve the underlying entity before proposing the exact answer. Weight the most "
                 "discriminating clues first, and reject any entity affirmatively contradicted by "
-                "the exact experiment, event, date, or relation in a matched source. Propose the "
-                "answer, a constraint-by-constraint evidence chain, primary sources or URLs, and "
+                "the exact experiment, event, date, or relation in a matched source. Keep at least "
+                "three viable entities until a constraint-by-constraint ledger distinguishes "
+                "them. For every candidate and every clue, label direct support, inference, "
+                "unknown, or contradiction. Propose the answer, primary sources or URLs, and "
                 "high-information follow-up queries. State uncertainty explicitly.",
             ),
             (
                 "Adversarial constraint auditor",
                 "Challenge every candidate implied by the evidence. Check dates, negation, causal "
                 "ordering, aliases, units, and minimal-pair alternatives. Identify the strongest "
-                "falsification tests and what evidence would resolve them.",
+                "falsification tests and what evidence would resolve them. Do not let one candidate "
+                "win by repeated mentions; compare clue coverage in an explicit candidate matrix.",
             ),
             (
                 "Search strategy specialist",

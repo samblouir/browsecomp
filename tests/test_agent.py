@@ -311,6 +311,27 @@ class SuccessfulBrowser:
         )
 
 
+class LinkedSuccessfulBrowser:
+    async def fetch(self, url):
+        links = []
+        if url != "https://example.test/related-history":
+            links = [
+                {
+                    "text": "Entity history and origins",
+                    "url": "https://example.test/related-history",
+                }
+            ]
+        return PageDocument(
+            requested_url=url,
+            final_url=url,
+            title="Evidence",
+            text="verified page evidence",
+            content_type="text/plain",
+            status_code=200,
+            links=links,
+        )
+
+
 class FakeExternalModelBroker:
     def __init__(self):
         self.requests = []
@@ -692,6 +713,37 @@ def test_strategy_candidate_urls_preserve_route_breadth_before_depth() -> None:
     ]
 
 
+def test_related_evidence_urls_rank_semantic_same_site_links() -> None:
+    pages = [
+        {
+            "final_url": "https://source.test/colonial-overview",
+            "links": [
+                {
+                    "text": "Shop all products",
+                    "url": "https://source.test/collections/all",
+                },
+                {
+                    "text": "Entity history and origins",
+                    "url": "https://source.test/entity-history-origins",
+                },
+                {
+                    "text": "Independent entity history study",
+                    "url": "https://journal.test/entity-history-study",
+                },
+            ],
+        }
+    ]
+    assert AgentRunner._related_evidence_urls(
+        pages,
+        queries=["entity history origins earliest written account"],
+        opened={},
+        limit=2,
+    ) == [
+        "https://source.test/entity-history-origins",
+        "https://journal.test/entity-history-study",
+    ]
+
+
 def test_unopened_candidate_urls_skip_prior_pages() -> None:
     result = {
         "results": [
@@ -924,7 +976,7 @@ async def test_agent_executes_structured_external_search_strategy(tmp_path: Path
         ),
         BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
         search,
-        SuccessfulBrowser(),
+        LinkedSuccessfulBrowser(),
         model_client=AutomaticExternalModel(),
         external_model_config=ExternalModelConfig(
             enabled=True,
@@ -939,7 +991,7 @@ async def test_agent_executes_structured_external_search_strategy(tmp_path: Path
     assert outcome.errors == []
     assert outcome.search_calls == 4
     assert outcome.external_model_calls == 3
-    assert outcome.page_opens == 2
+    assert outcome.page_opens == 3
     assert search.queries == [
         "first clue",
         "second clue",
@@ -955,6 +1007,7 @@ async def test_agent_executes_structured_external_search_strategy(tmp_path: Path
         if row.get("role") == "user" and row.get("content", "").startswith("Tool result:")
     ]
     assert any('"strategy_search"' in row for row in tool_results)
+    assert any('"related_source_page_inspection"' in row for row in tool_results)
 
 
 @pytest.mark.asyncio
