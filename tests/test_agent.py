@@ -175,6 +175,34 @@ class DuplicateSearchModel:
         return None
 
 
+class StagnatingSearchModel:
+    def __init__(self):
+        self.responses = iter(
+            [
+                ModelResponse(
+                    content=('{"action":"search","query":"entity first documented use 2012..2023"}')
+                ),
+                ModelResponse(
+                    content=('{"action":"search","query":"entity first documented use 2012-2023"}')
+                ),
+                ModelResponse(
+                    content=(
+                        '{"action":"final","explanation":"strategy evidence",'
+                        '"exact_answer":"Answer","confidence":85,'
+                        '"citations":["https://example.test"]}'
+                    )
+                ),
+            ]
+        )
+
+    async def chat(self, messages, **kwargs):
+        del messages, kwargs
+        return next(self.responses)
+
+    async def close(self):
+        return None
+
+
 class BudgetRescueModel:
     def __init__(self):
         self.responses = iter(
@@ -227,6 +255,25 @@ class FakeSearch:
 
     async def search(self, query, count=None, offset=0):
         return [SearchResult(title="Result", url="https://example.test", snippet="clue")]
+
+
+class RecordingSearch(FakeSearch):
+    def __init__(self, tmp_path: Path):
+        super().__init__(tmp_path)
+        self.queries = []
+
+    async def search(self, query, count=None, offset=0):
+        del count, offset
+        self.queries.append(query)
+        return [SearchResult(title="Result", url="https://example.test", snippet="clue")]
+
+    async def search_many(self, queries, count=None):
+        del count
+        self.queries.extend(queries)
+        return [
+            [SearchResult(title="Result", url=f"https://example.test/{index}", snippet="clue")]
+            for index, _ in enumerate(queries, start=1)
+        ]
 
 
 class FakeBrowser:
@@ -284,6 +331,26 @@ class RescueExternalModelBroker:
                 "request_id": f"emr_rescue_{index}",
             }
             for index, _ in enumerate(requests, start=1)
+        ]
+
+
+class QueryStrategyExternalModelBroker:
+    def __init__(self):
+        self.calls = []
+
+    async def ask_many(self, requests, *, request_namespace):
+        self.calls.append((deepcopy(requests), request_namespace))
+        return [
+            {
+                "ok": True,
+                "status": "succeeded",
+                "request_id": "emr_query_strategy",
+                "content": (
+                    '{"analysis":"pivot from repeated clue wording",'
+                    '"queries":["entity history explorer attribution",'
+                    '"candidate chronicler entity earliest account"]}'
+                ),
+            }
         ]
 
 
@@ -481,6 +548,41 @@ def test_result_has_urls_detects_batched_search_candidates() -> None:
         {"searches": [{"query": "q", "results": [{"url": "https://example.test"}]}]}
     )
     assert not AgentRunner._result_has_urls({"searches": [{"query": "q", "results": []}]})
+
+
+def test_search_novelty_suppresses_date_range_and_near_duplicate_variants() -> None:
+    action, suppressed = AgentRunner._filter_redundant_search_action(
+        AgentAction(
+            action="search_many",
+            payload={
+                "queries": [
+                    '"first person to document entity use" 2012-2023',
+                    '"different candidate" entity earliest account',
+                ]
+            },
+        ),
+        ['"first person to document entity use" 2012..2023'],
+    )
+    assert action is not None
+    assert action.payload["queries"] == ['"different candidate" entity earliest account']
+    assert suppressed == ['"first person to document entity use" 2012-2023']
+
+
+def test_search_strategy_parser_returns_only_novel_queries() -> None:
+    result = {
+        "ok": True,
+        "content": (
+            "```json\n"
+            '{"analysis":"pivot","queries":['
+            '"same clue 2012-2023","entity history explorer","entity history explorer"]}'
+            "\n```"
+        ),
+    }
+    assert AgentRunner._strategy_queries_from_result(
+        result,
+        prior_queries=["same clue 2012..2023"],
+        limit=4,
+    ) == ["entity history explorer"]
 
 
 def test_candidate_urls_are_selected_round_robin() -> None:
@@ -812,6 +914,56 @@ async def test_repeated_search_opens_fresh_evidence_instead_of_looping(tmp_path:
         if row.get("role") == "user" and row.get("content", "").startswith("Tool result:")
     ]
     assert any("controller_recovery" in row for row in tool_results)
+
+
+@pytest.mark.asyncio
+async def test_repeated_search_uses_one_external_strategy_recovery(tmp_path: Path) -> None:
+    search = RecordingSearch(tmp_path)
+    broker = QueryStrategyExternalModelBroker()
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=3,
+            max_search_calls=5,
+            automatic_external_after_search_calls=0,
+            automatic_page_inspection_after_search_actions=0,
+            max_batch_size=3,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        search,
+        FakeBrowser(),
+        model_client=StagnatingSearchModel(),
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=4,
+        ),
+        external_model_broker=broker,
+    )
+    outcome = await runner.run("Question", request_namespace="run:item:strategy")
+    assert outcome.status == "completed"
+    assert outcome.search_calls == 3
+    assert outcome.external_model_calls == 1
+    assert search.queries == [
+        "entity first documented use 2012..2023",
+        "entity history explorer attribution",
+        "candidate chronicler entity earliest account",
+    ]
+    assert len(broker.calls) == 1
+    assert broker.calls[0][1].endswith(":search-strategy-recovery")
+    tool_results = [
+        row["content"]
+        for row in outcome.transcript
+        if row.get("role") == "user" and row.get("content", "").startswith("Tool result:")
+    ]
+    assert any("external_search_strategy_recovery" in row for row in tool_results)
 
 
 @pytest.mark.asyncio

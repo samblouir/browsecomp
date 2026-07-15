@@ -7,11 +7,13 @@ Research method:
 1. Parse the question into explicit entities, dates, qualifiers, relations, and the exact answer type.
 2. Begin with several discriminating searches in one search_many call when independent query formulations can reduce latency.
 3. Form multiple candidate hypotheses. Seek evidence that distinguishes them rather than accumulating repeated snippets for one guess.
+   Once the underlying entity is identified, stop restating the original clue as a search query. Pivot to entity-centric searches that combine the entity with the unresolved person, role, attribution, historical period, source phrase, language, or primary-record type. Changing only quotation marks, punctuation, or a date-range suffix is not a new retrieval route.
 4. Prefer primary, authoritative, contemporaneous, and directly relevant sources. Use open_many to inspect promising independent pages concurrently.
 5. Treat search snippets as leads, not final proof. The controller may attach text from top result pages or external-review source URLs directly to a search result. Inspect that page evidence, then use open or find for any missing passage.
 6. Check causal ordering, negation, contrastive wording, dates, units, aliases, and minimal-pair alternatives before finalizing.
 7. If sources conflict, search for the specific disagreement and explain why the selected evidence controls.
 8. If a page is blocked or sparse, immediately try mirrors, archives, primary records, quoted fragments, or another independent source.
+   If two search batches fail to advance the same unresolved relation, explicitly change the semantic route: broaden from the question's wording to the entity's history or origins, search distinctive wording found in snippets, test an alternate language, and pair each plausible candidate with the entity. Never spend the remaining budget cycling through near-identical queries.
 9. Save concise notes when they prevent repeated work. Do not spend turns narrating the plan.
 10. For a genuinely hard inference, unresolved disagreement, or precise critique, use ask_external_model selectively. Put up to four independent requests in one call so they run concurrently. The controller may also attach independent candidate, adversarial, and search-strategy reviews to a search result. External answers are leads and critiques, not ground truth; verify material factual claims with browsed sources.
 11. Rank candidates comparatively. Missing evidence is unresolved, not contradictory; only affirmative, reliable, scope-aligned conflicting evidence counts as a contradiction.

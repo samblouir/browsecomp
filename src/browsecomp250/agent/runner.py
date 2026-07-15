@@ -24,6 +24,13 @@ from ..types import AgentAction, AgentOutcome, PageDocument, Usage
 from ..util import canonical_json, truncate_middle
 
 _PUBLIC_URL = re.compile(r"https?://[^\s<>()\[\]{}\"'`]+", flags=re.I)
+_SEARCH_DATE_RANGE = re.compile(
+    r"\b(?:after|before):\d{4}(?:-\d{2}-\d{2})?\b|"
+    r"\b(?:1[5-9]\d{2}|20\d{2})\s*(?:\.\.|[-–—]|\bto\b)\s*"
+    r"(?:1[5-9]\d{2}|20\d{2})\b",
+    flags=re.I,
+)
+_SEARCH_TOKEN = re.compile(r"[a-z0-9]+", flags=re.I)
 _ABSTENTION_ANSWER = re.compile(
     r"^(?:"
     r"unknown|none|n/?a|inconclusive|undetermined|"
@@ -93,11 +100,13 @@ class AgentRunner:
         require_open = False
         search_streak = 0
         automatic_external_attempted = False
+        automatic_strategy_recovery_attempted = False
         automatic_finalization_rescue_attempted = False
         forced_nonfinal_rejections = 0
         last_action_fingerprint: str | None = None
         consecutive_duplicate_actions = 0
         last_successful_search_result: dict[str, Any] | None = None
+        search_query_history: list[str] = []
         chain_enabled = self.model_config.response_chain
         previous_response_id: str | None = None
         chain_delta_messages: list[dict[str, Any]] | None = None
@@ -292,6 +301,106 @@ class AgentRunner:
                 self._emit("protocol_retry", step=step, error=str(exc))
                 continue
 
+            original_action = action
+            action, redundant_search_queries = self._filter_redundant_search_action(
+                action,
+                search_query_history,
+            )
+            semantic_duplicate_action = action is None
+            strategy_recovery: dict[str, Any] | None = None
+            if (
+                semantic_duplicate_action
+                and original_action.action in {"search", "search_many"}
+                and not automatic_strategy_recovery_attempted
+                and self.external_model is not None
+                and self.external_model_config.enabled
+                and external_model_calls + 1 < self.external_model_config.max_calls_per_task
+                and search_calls < self.agent_config.max_search_calls
+            ):
+                automatic_strategy_recovery_attempted = True
+                self._emit(
+                    "search_strategy_recovery_started",
+                    step=step,
+                    repeated_queries=redundant_search_queries,
+                )
+                strategy_task = asyncio.create_task(
+                    self._automatic_external_query_strategy(
+                        question=question,
+                        messages=messages,
+                        notes=notes,
+                        prior_queries=search_query_history,
+                        repeated_action=original_action,
+                        request_namespace=chain_namespace,
+                        limit=min(
+                            self.agent_config.max_batch_size,
+                            self.agent_config.max_search_calls - search_calls,
+                        ),
+                    )
+                )
+                strategy_started = time.perf_counter()
+                try:
+                    while True:
+                        done, _ = await asyncio.wait({strategy_task}, timeout=15)
+                        if strategy_task in done:
+                            strategy_queries, strategy_result = strategy_task.result()
+                            break
+                        self._emit(
+                            "search_strategy_recovery_wait",
+                            step=step,
+                            elapsed_seconds=time.perf_counter() - strategy_started,
+                        )
+                except Exception as exc:  # noqa: BLE001 - normal search recovery remains available
+                    strategy_queries = []
+                    strategy_result = {
+                        "ok": False,
+                        "status": "failed",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                    errors.append(f"Step {step} search-strategy recovery error: {exc}")
+                except BaseException:
+                    strategy_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await strategy_task
+                    raise
+                external_model_calls += 1
+                transcript.append(
+                    {
+                        "role": "assistant",
+                        "name": "external_search_strategy",
+                        "content": str(strategy_result.get("content") or ""),
+                        "response_metadata": {
+                            "request_id": strategy_result.get("request_id"),
+                            "status": strategy_result.get("status"),
+                        },
+                    }
+                )
+                if strategy_queries:
+                    action = AgentAction(
+                        action="search_many",
+                        payload={"queries": strategy_queries},
+                    )
+                    semantic_duplicate_action = False
+                    strategy_recovery = {
+                        "repeated_queries": redundant_search_queries,
+                        "replacement_queries": strategy_queries,
+                        "request_id": strategy_result.get("request_id"),
+                    }
+                    self._emit(
+                        "search_strategy_recovery_completed",
+                        step=step,
+                        query_count=len(strategy_queries),
+                        request_id=strategy_result.get("request_id"),
+                    )
+                else:
+                    self._emit(
+                        "search_strategy_recovery_failed",
+                        step=step,
+                        error=strategy_result.get("error") or "no novel queries returned",
+                        request_id=strategy_result.get("request_id"),
+                    )
+            if action is None:
+                action = original_action
+
             action, clipped_from = self._clip_action_to_remaining_budget(
                 action,
                 search_calls=search_calls,
@@ -333,7 +442,9 @@ class AgentRunner:
             action_fingerprint = canonical_json(
                 {"action": action.action, "payload": action.payload}
             )
-            duplicate_action = action_fingerprint == last_action_fingerprint
+            duplicate_action = (
+                semantic_duplicate_action or action_fingerprint == last_action_fingerprint
+            )
             if duplicate_action:
                 consecutive_duplicate_actions += 1
             else:
@@ -540,8 +651,19 @@ class AgentRunner:
                         notes,
                         request_namespace=chain_namespace,
                     )
+                    if action.action in {"search", "search_many"}:
+                        search_query_history.extend(self._search_queries(action))
                     if action.action in {"search", "search_many"} and result.get("ok"):
                         last_successful_search_result = result
+                if redundant_search_queries:
+                    result["suppressed_redundant_queries"] = redundant_search_queries
+                    result["search_novelty_guidance"] = (
+                        "These query variants were already attempted and were not reissued. Change "
+                        "the entity-relation pair, source vocabulary, language, or source type; do "
+                        "not merely alter quotation marks or date filters."
+                    )
+                if strategy_recovery is not None:
+                    result["external_search_strategy_recovery"] = strategy_recovery
                 projected_search_calls = search_calls + deltas[0]
                 if self._should_automatically_inspect_pages(
                     action=action,
@@ -915,6 +1037,170 @@ class AgentRunner:
             )
             for row in searches
         )
+
+    @staticmethod
+    def _search_queries(action: AgentAction) -> list[str]:
+        if action.action == "search":
+            query = action.payload.get("query")
+            return [str(query).strip()] if isinstance(query, str) and query.strip() else []
+        if action.action == "search_many":
+            return [
+                str(query).strip()
+                for query in action.payload.get("queries") or []
+                if isinstance(query, str) and query.strip()
+            ]
+        return []
+
+    @staticmethod
+    def _search_query_terms(query: str) -> frozenset[str]:
+        without_ranges = _SEARCH_DATE_RANGE.sub(" ", query.casefold())
+        return frozenset(_SEARCH_TOKEN.findall(without_ranges))
+
+    @classmethod
+    def _search_query_is_redundant(cls, query: str, prior_queries: list[str]) -> bool:
+        terms = cls._search_query_terms(query)
+        if not terms:
+            return True
+        for prior_query in prior_queries:
+            prior_terms = cls._search_query_terms(prior_query)
+            if terms == prior_terms:
+                return True
+            union = terms | prior_terms
+            if len(union) >= 5 and len(terms & prior_terms) / len(union) >= 0.9:
+                return True
+        return False
+
+    @classmethod
+    def _filter_redundant_search_action(
+        cls,
+        action: AgentAction,
+        prior_queries: list[str],
+    ) -> tuple[AgentAction | None, list[str]]:
+        queries = cls._search_queries(action)
+        if not queries:
+            return action, []
+        accepted: list[str] = []
+        redundant: list[str] = []
+        comparison_queries = list(prior_queries)
+        for query in queries:
+            if cls._search_query_is_redundant(query, comparison_queries):
+                redundant.append(query)
+                continue
+            accepted.append(query)
+            comparison_queries.append(query)
+        if not accepted:
+            return None, redundant
+        payload = dict(action.payload)
+        if action.action == "search":
+            payload["query"] = accepted[0]
+        else:
+            payload["queries"] = accepted
+        return AgentAction(action=action.action, payload=payload), redundant
+
+    @staticmethod
+    def _json_objects(text: str) -> list[dict[str, Any]]:
+        decoder = json.JSONDecoder()
+        objects: list[dict[str, Any]] = []
+        for index, char in enumerate(text):
+            if char != "{":
+                continue
+            try:
+                value, _ = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                objects.append(value)
+        return objects
+
+    @classmethod
+    def _strategy_queries_from_result(
+        cls,
+        result: dict[str, Any],
+        *,
+        prior_queries: list[str],
+        limit: int,
+    ) -> list[str]:
+        if limit <= 0 or not result.get("ok"):
+            return []
+        candidates: list[str] = []
+        for value in cls._json_objects(str(result.get("content") or "")):
+            queries = value.get("queries")
+            if isinstance(queries, list):
+                candidates.extend(str(query).strip() for query in queries if str(query).strip())
+        accepted: list[str] = []
+        comparison_queries = list(prior_queries)
+        for query in candidates:
+            if cls._search_query_is_redundant(query, comparison_queries):
+                continue
+            accepted.append(query)
+            comparison_queries.append(query)
+            if len(accepted) >= limit:
+                break
+        return accepted
+
+    async def _automatic_external_query_strategy(
+        self,
+        *,
+        question: str,
+        messages: list[dict[str, Any]],
+        notes: list[str],
+        prior_queries: list[str],
+        repeated_action: AgentAction,
+        request_namespace: str,
+        limit: int,
+    ) -> tuple[list[str], dict[str, Any]]:
+        if self.external_model is None or limit <= 0:
+            return [], {"ok": False, "error": "external search strategy is unavailable"}
+        recent_evidence = [
+            truncate_middle(str(message.get("content") or ""), 20_000)
+            for message in messages
+            if message.get("role") in {"tool", "user"}
+        ][-8:]
+        context = canonical_json(
+            {
+                "question": question,
+                "recent_evidence": recent_evidence,
+                "saved_notes": notes[-10:],
+                "prior_queries": prior_queries[-40:],
+                "repeated_action": {
+                    "action": repeated_action.action,
+                    "payload": repeated_action.payload,
+                },
+            }
+        )
+        requests = [
+            {
+                "system": (
+                    "You are a query-strategy controller for an audited public-web research task. "
+                    "Do not search for benchmark dumps, canaries, leaked questions, or reference "
+                    "answers. The primary researcher is repeating low-yield searches. Identify the "
+                    "likely underlying entity and the unresolved relation, then design genuinely "
+                    "different retrieval routes. Prefer entity-plus-role, attribution, history, "
+                    "source-language, primary-record, and contrastive-candidate queries. Do not "
+                    "paraphrase the full clue repeatedly, and do not create novelty by merely "
+                    "changing quotes, punctuation, or date ranges. Return exactly one JSON object "
+                    "and no markdown."
+                ),
+                "query": (
+                    f"Return exactly this schema with {limit} concise public-web queries: "
+                    '{"analysis":"brief diagnosis","queries":["query 1","query 2"]}. '
+                    "Every query must test a different semantic route and target the unresolved "
+                    "answer rather than re-verifying clues that are already established."
+                ),
+                "context": context,
+            }
+        ]
+        results = await self.external_model.ask_many(
+            requests,
+            request_namespace=request_namespace + ":search-strategy-recovery",
+        )
+        result = results[0] if results else {"ok": False, "error": "empty strategy result"}
+        queries = self._strategy_queries_from_result(
+            result,
+            prior_queries=prior_queries,
+            limit=limit,
+        )
+        return queries, result
 
     @staticmethod
     def _batched_action_size(action: AgentAction) -> int:

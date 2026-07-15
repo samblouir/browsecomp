@@ -48,6 +48,19 @@ def test_tool_call_normalizes_singular_name_with_batch_arguments() -> None:
     assert action.payload == {"queries": ["one", "two"]}
 
 
+def test_tool_call_normalizes_singular_name_with_plural_string_argument() -> None:
+    action = action_from_tool_call(
+        {
+            "function": {
+                "name": "search",
+                "arguments": '{"queries":"one precise query","count":7}',
+            }
+        }
+    )
+    assert action.action == "search"
+    assert action.payload == {"query": "one precise query", "count": 7}
+
+
 def test_tool_call_normalizes_batch_name_with_singular_arguments() -> None:
     action = action_from_tool_call(
         {

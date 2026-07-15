@@ -137,12 +137,18 @@ def action_from_tool_call(tool_call: dict[str, Any]) -> AgentAction:
     # normalize the shape instead of discarding a useful evidence request.
     if name == "search" and "query" not in payload and isinstance(payload.get("queries"), list):
         name = "search_many"
+    elif name == "search" and "query" not in payload and isinstance(payload.get("queries"), str):
+        payload = {**payload, "query": payload["queries"]}
+        payload.pop("queries", None)
     elif (
         name == "search_many" and "queries" not in payload and isinstance(payload.get("query"), str)
     ):
         name = "search"
     elif name == "open" and "url" not in payload and isinstance(payload.get("urls"), list):
         name = "open_many"
+    elif name == "open" and "url" not in payload and isinstance(payload.get("urls"), str):
+        payload = {**payload, "url": payload["urls"]}
+        payload.pop("urls", None)
     elif name == "open_many" and "urls" not in payload and isinstance(payload.get("url"), str):
         name = "open"
     _validate_payload(name, payload)
