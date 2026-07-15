@@ -28,6 +28,16 @@ _SECRET_EXACT_KEYS = {
     "x_api_key",
     "x_subscription_token",
 }
+_PLACEHOLDER_SECRETS = {
+    "change-me",
+    "changeme",
+    "dummy",
+    "example",
+    "replace-me",
+    "test",
+    "your-api-key",
+    "your_api_key",
+}
 
 
 def _is_secret_key(key: object) -> bool:
@@ -50,6 +60,14 @@ def _is_secret_key(key: object) -> bool:
             "_bearer_token",
             "_subscription_token",
         )
+    )
+
+
+def is_placeholder_secret(value: str) -> bool:
+    """Return whether a configured credential is an obvious non-secret placeholder."""
+    normalized = value.strip().strip("\"'").casefold()
+    return normalized in _PLACEHOLDER_SECRETS or (
+        normalized.startswith("${") and normalized.endswith("}")
     )
 
 

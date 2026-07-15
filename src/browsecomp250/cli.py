@@ -33,7 +33,7 @@ from .report import paired_compare, sanitize_run, scan_public_tree, write_report
 from .run import BenchmarkEngine, RunStorage
 from .search import create_search_provider
 from .subset import load_indices, reference_indices
-from .util import canonical_sha256
+from .util import canonical_sha256, is_placeholder_secret
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -171,20 +171,31 @@ def doctor(
             else ("explicitly allowed without a key" if cfg.model.allow_empty_api_key else "empty"),
         )
     )
+    search_key = cfg.search.selected_api_key()
+    search_key_usable = bool(search_key) and not is_placeholder_secret(search_key)
     checks.append(
         (
             "Search credentials",
-            bool(cfg.search.selected_api_key()) or cfg.search.provider == "searxng",
-            cfg.search.provider,
+            search_key_usable or cfg.search.provider in {"searxng", "google_chrome"},
+            (
+                f"{cfg.search.provider}; placeholder credential"
+                if search_key and not search_key_usable
+                else cfg.search.provider
+            ),
         )
     )
+    grader_key_usable = bool(cfg.grader.api_key) and not is_placeholder_secret(cfg.grader.api_key)
     checks.append(
         (
             "Grader credentials",
             cfg.grader.mode == "deterministic"
-            or bool(cfg.grader.api_key)
+            or grader_key_usable
             or cfg.grader.allow_empty_api_key,
-            cfg.grader.mode,
+            (
+                f"{cfg.grader.mode}; placeholder credential"
+                if cfg.grader.api_key and not grader_key_usable
+                else cfg.grader.mode
+            ),
         )
     )
 
@@ -306,8 +317,15 @@ def _validate_headline(cfg: AppConfig, allow_unpinned_dataset: bool) -> list[str
         problems.append(
             "grader API key is empty; set a key or explicitly set grader.allow_empty_api_key=true"
         )
-    if cfg.search.provider != "searxng" and not cfg.search.selected_api_key():
+    elif cfg.grader.api_key and is_placeholder_secret(cfg.grader.api_key):
+        problems.append("grader API key is an obvious placeholder")
+    if (
+        cfg.search.provider not in {"searxng", "google_chrome"}
+        and not cfg.search.selected_api_key()
+    ):
         problems.append(f"{cfg.search.provider} search API key is empty")
+    elif is_placeholder_secret(cfg.search.selected_api_key()):
+        problems.append(f"{cfg.search.provider} search API key is an obvious placeholder")
     return problems
 
 

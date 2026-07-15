@@ -28,6 +28,7 @@ from ..util import (
     canonical_sha256,
     environment_metadata,
     git_metadata,
+    is_placeholder_secret,
     sha256_bytes,
     sqlite_family_state,
     utc_now_iso,
@@ -45,6 +46,29 @@ class BenchmarkEngine:
 
     def _secret_fingerprint(self, value: str) -> str | None:
         return sha256_bytes(value.encode("utf-8"))[:16] if value else None
+
+    def _validate_runtime_credentials(self) -> None:
+        problems: list[str] = []
+        if not self.config.model.api_key and not self.config.model.allow_empty_api_key:
+            problems.append("model API key is empty")
+
+        search_key = self.config.search.selected_api_key()
+        if self.config.search.provider != "searxng":
+            if not search_key and self.config.search.provider not in {"google_chrome"}:
+                problems.append(f"{self.config.search.provider} search API key is empty")
+            elif search_key and is_placeholder_secret(search_key):
+                problems.append(f"{self.config.search.provider} search API key is a placeholder")
+
+        if self.config.grader.mode in {"official_llm", "both"}:
+            if not self.config.grader.api_key and not self.config.grader.allow_empty_api_key:
+                problems.append("grader API key is empty")
+            elif self.config.grader.api_key and is_placeholder_secret(self.config.grader.api_key):
+                problems.append("grader API key is a placeholder")
+
+        if problems:
+            raise RuntimeError(
+                "Benchmark credential preflight failed before launch: " + "; ".join(problems)
+            )
 
     def _build_lock(self, *, start: int = 0, limit: int | None = None) -> dict[str, Any]:
         dataset_metadata = validate_dataset_file(
@@ -130,6 +154,7 @@ class BenchmarkEngine:
                 f"{free_bytes / 1024**3:.2f} GiB available; "
                 f"at least {_MIN_RUN_FREE_BYTES / 1024**3:.0f} GiB required"
             )
+        self._validate_runtime_credentials()
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.storage.write_private_readme()
         write_dataset_manifest(self.config.dataset)

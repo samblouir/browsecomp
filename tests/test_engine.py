@@ -205,3 +205,47 @@ async def test_engine_fails_before_writing_lock_when_disk_space_is_too_low(
     with pytest.raises(RuntimeError, match="Insufficient free disk"):
         await BenchmarkEngine(config).run(limit=1)
     assert not (tmp_path / "runs" / "fixture-low-disk" / "run.lock.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_engine_rejects_placeholder_grader_key_before_writing_lock(
+    tmp_path: Path,
+) -> None:
+    config = AppConfig(
+        run=RunConfig(name="fixture-placeholder-key", output_dir=tmp_path / "runs"),
+        dataset=DatasetConfig(),
+        model=ModelConfig(api_base="https://model.test/v1", api_key="key", model="star"),
+        search=SearchConfig(provider="searxng", cache_path=tmp_path / "search.sqlite3"),
+        browser=BrowserConfig(cache_path=tmp_path / "pages.sqlite3", block_private_networks=False),
+        agent=AgentConfig(),
+        grader=GraderConfig(mode="official_llm", api_key="replace-me"),
+        report=ReportConfig(),
+    )
+
+    with pytest.raises(RuntimeError, match="grader API key is a placeholder"):
+        await BenchmarkEngine(config).run(limit=1)
+    assert not (tmp_path / "runs" / "fixture-placeholder-key" / "run.lock.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_engine_rejects_placeholder_search_key_before_writing_lock(
+    tmp_path: Path,
+) -> None:
+    config = AppConfig(
+        run=RunConfig(name="fixture-placeholder-search", output_dir=tmp_path / "runs"),
+        dataset=DatasetConfig(),
+        model=ModelConfig(api_base="https://model.test/v1", api_key="key", model="star"),
+        search=SearchConfig(
+            provider="brave",
+            brave_api_key="replace-me",
+            cache_path=tmp_path / "search.sqlite3",
+        ),
+        browser=BrowserConfig(cache_path=tmp_path / "pages.sqlite3", block_private_networks=False),
+        agent=AgentConfig(),
+        grader=GraderConfig(mode="deterministic"),
+        report=ReportConfig(),
+    )
+
+    with pytest.raises(RuntimeError, match="brave search API key is a placeholder"):
+        await BenchmarkEngine(config).run(limit=1)
+    assert not (tmp_path / "runs" / "fixture-placeholder-search" / "run.lock.json").exists()
