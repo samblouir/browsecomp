@@ -124,7 +124,11 @@ class OpenAICompatibleClient:
                     )
                 response.raise_for_status()
                 data = response.json()
-                return self._parse_response(data, time.perf_counter() - started)
+                return self._parse_response(
+                    data,
+                    time.perf_counter() - started,
+                    response_headers=dict(response.headers),
+                )
             except (
                 TimeoutError,
                 httpx.TimeoutException,
@@ -158,7 +162,13 @@ class OpenAICompatibleClient:
             f"Chat completion failed after retries: {error_name}: {last_error}{detail}"
         )
 
-    def _parse_response(self, data: dict[str, Any], latency: float) -> ModelResponse:
+    def _parse_response(
+        self,
+        data: dict[str, Any],
+        latency: float,
+        *,
+        response_headers: dict[str, str] | None = None,
+    ) -> ModelResponse:
         choices = data.get("choices")
         if not isinstance(choices, list) or not choices:
             raise ModelAPIError("Response has no choices")
@@ -188,6 +198,16 @@ class OpenAICompatibleClient:
         metadata = data.get("metadata")
         if not isinstance(metadata, dict):
             metadata = {}
+        audited_response_headers = {
+            key.lower(): value
+            for key, value in (response_headers or {}).items()
+            if key.lower().startswith("x-frl-") or key.lower() == "x-request-id"
+        }
+        if audited_response_headers:
+            metadata = {
+                **metadata,
+                "router_response_headers": audited_response_headers,
+            }
         response_id = str(metadata.get("frontierrl_response_id") or data.get("id") or "").strip()
         conversation_id = str(
             metadata.get("frontierrl_conversation_id")

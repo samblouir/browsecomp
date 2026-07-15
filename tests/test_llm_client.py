@@ -20,6 +20,12 @@ async def test_openai_compatible_request_and_response() -> None:
         captured["body"] = request.content.decode("utf-8")
         return httpx.Response(
             200,
+            headers={
+                "X-Request-Id": "router-request-1",
+                "X-FRL-KV-Home-Backend": "star7-worker-3",
+                "X-FRL-Conversation-Id": "bc250-chain-1",
+                "Set-Cookie": "must-not-be-audited=secret",
+            },
             json={
                 "id": "chatcmpl-frlstate-test",
                 "model": "served",
@@ -72,6 +78,11 @@ async def test_openai_compatible_request_and_response() -> None:
     assert response.response_model == "served"
     assert response.response_id == "chatcmpl-frlstate-test"
     assert response.conversation_id == "frlconv-test"
+    assert response.metadata["router_response_headers"] == {
+        "x-frl-conversation-id": "bc250-chain-1",
+        "x-frl-kv-home-backend": "star7-worker-3",
+        "x-request-id": "router-request-1",
+    }
     assert response.usage.cached_tokens == 40
     assert response.usage.cost_usd == pytest.approx(0.00014)
     await raw_client.aclose()
