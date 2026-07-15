@@ -372,6 +372,32 @@ class QueryStrategyExternalModelBroker:
         ]
 
 
+class StructuredConsultationBroker:
+    def __init__(self):
+        self.calls = []
+
+    async def ask_many(self, requests, *, request_namespace):
+        self.calls.append((deepcopy(requests), request_namespace))
+        results = []
+        for index, request in enumerate(requests, start=1):
+            if "Role: Search strategy specialist" in request["query"]:
+                content = (
+                    '{"analysis":"compare entities","entity_candidates":["A","B"],'
+                    '"queries":["entity A primary history","entity B attribution source"]}'
+                )
+            else:
+                content = "independent critique"
+            results.append(
+                {
+                    "ok": True,
+                    "status": "succeeded",
+                    "request_id": f"emr_structured_{index}",
+                    "content": content,
+                }
+            )
+        return results
+
+
 class RepairingExternalModelBroker:
     def __init__(self):
         self.calls = []
@@ -601,6 +627,26 @@ def test_search_strategy_parser_returns_only_novel_queries() -> None:
         prior_queries=["same clue 2012..2023"],
         limit=4,
     ) == ["entity history explorer"]
+
+
+def test_consultation_strategy_uses_only_designated_role() -> None:
+    consultations = [
+        {
+            "ok": True,
+            "review_role": "Independent candidate investigator",
+            "content": '{"queries":["ignore this answer query"]}',
+        },
+        {
+            "ok": True,
+            "review_role": "Search strategy specialist",
+            "content": '{"queries":["already searched 2012-2023","new entity history"]}',
+        },
+    ]
+    assert AgentRunner._consultation_strategy_queries(
+        consultations,
+        prior_queries=["already searched 2012..2023"],
+        limit=3,
+    ) == ["new entity history"]
 
 
 def test_candidate_urls_are_selected_round_robin() -> None:
@@ -835,6 +881,60 @@ async def test_agent_automatically_attaches_external_reviews_after_search_thresh
     assert namespace == hashlib.sha256(b"run:item:auto").hexdigest()[:24]
     assert len(requests) == 2
     assert all("Original research question" in request["context"] for request in requests)
+
+
+@pytest.mark.asyncio
+async def test_agent_executes_structured_external_search_strategy(tmp_path: Path) -> None:
+    broker = StructuredConsultationBroker()
+    search = RecordingSearch(tmp_path)
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=4,
+            max_search_calls=6,
+            automatic_external_after_search_calls=2,
+            automatic_external_requests=3,
+            automatic_page_inspection_after_search_actions=0,
+            max_batch_size=4,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        search,
+        SuccessfulBrowser(),
+        model_client=AutomaticExternalModel(),
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=4,
+        ),
+        external_model_broker=broker,
+    )
+    outcome = await runner.run("Question", request_namespace="run:item:structured-strategy")
+    assert outcome.status == "completed"
+    assert outcome.errors == []
+    assert outcome.search_calls == 4
+    assert outcome.external_model_calls == 3
+    assert search.queries == [
+        "first clue",
+        "second clue",
+        "entity A primary history",
+        "entity B attribution source",
+    ]
+    requests, _ = broker.calls[0]
+    strategy_request = requests[2]
+    assert "strongest alternative" in strategy_request["query"]
+    tool_results = [
+        row["content"]
+        for row in outcome.transcript
+        if row.get("role") == "user" and row.get("content", "").startswith("Tool result:")
+    ]
+    assert any('"strategy_search"' in row for row in tool_results)
 
 
 @pytest.mark.asyncio
@@ -1090,6 +1190,47 @@ async def test_finalizer_repairs_external_abstention_within_four_calls(tmp_path:
         "finalization-adjudication",
         "finalization-repair",
     ]
+
+
+@pytest.mark.asyncio
+async def test_finalizer_preserves_early_milestone_evidence(tmp_path: Path) -> None:
+    broker = RepairingExternalModelBroker()
+    runner = AgentRunner(
+        ModelConfig(api_base="http://model.test/v1", api_key="k", model="m"),
+        AgentConfig(),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=FakeModel(),
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=4,
+        ),
+        external_model_broker=broker,
+    )
+    messages = [
+        {"role": "user", "content": "original question"},
+        {
+            "role": "tool",
+            "content": '{"independent_external_consultation":"EARLY_ENTITY_SIGNAL"}',
+        },
+        *[{"role": "tool", "content": f"later evidence {index}"} for index in range(10)],
+    ]
+    action, result = await runner._automatic_external_finalization(
+        question="Question",
+        response=ModelResponse(content="latest candidate"),
+        messages=messages,
+        transcript=[],
+        notes=[],
+        request_namespace="run:item:milestone",
+        request_budget=4,
+    )
+    assert action is not None
+    assert result["ok"] is True
+    first_review_context = broker.calls[0][0][0]["context"]
+    assert "EARLY_ENTITY_SIGNAL" in first_review_context
 
 
 @pytest.mark.asyncio

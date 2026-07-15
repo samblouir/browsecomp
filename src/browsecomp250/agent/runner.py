@@ -783,6 +783,56 @@ class AgentRunner:
                             "reviews as leads. Verify material claims against public-web evidence."
                         ),
                     }
+                    remaining_search_budget = max(
+                        0,
+                        self.agent_config.max_search_calls - (search_calls + deltas[0]),
+                    )
+                    consultation_strategy_queries = self._consultation_strategy_queries(
+                        consultations,
+                        prior_queries=search_query_history,
+                        limit=min(self.agent_config.max_batch_size, remaining_search_budget),
+                    )
+                    strategy_candidate_urls: list[str] = []
+                    if consultation_strategy_queries:
+                        self._emit(
+                            "external_strategy_search_started",
+                            step=step,
+                            query_count=len(consultation_strategy_queries),
+                        )
+                        strategy_search, strategy_search_deltas = await self._execute_action(
+                            AgentAction(
+                                action="search_many",
+                                payload={"queries": consultation_strategy_queries},
+                            ),
+                            opened,
+                            notes,
+                            request_namespace=chain_namespace,
+                        )
+                        search_query_history.extend(consultation_strategy_queries)
+                        result["independent_external_consultation"]["strategy_search"] = (
+                            strategy_search
+                        )
+                        deltas = tuple(
+                            left + right
+                            for left, right in zip(
+                                deltas,
+                                strategy_search_deltas,
+                                strict=True,
+                            )
+                        )
+                        if strategy_search.get("ok"):
+                            last_successful_search_result = strategy_search
+                            strategy_candidate_urls = self._candidate_urls(
+                                strategy_search,
+                                self.agent_config.automatic_page_inspection_count,
+                            )
+                        self._emit(
+                            "external_strategy_search_completed",
+                            step=step,
+                            succeeded=int(strategy_search.get("succeeded") or 0),
+                            failed=int(strategy_search.get("failed") or 0),
+                            returned_urls=len(strategy_candidate_urls),
+                        )
                     remaining_page_budget = max(
                         0,
                         self.agent_config.max_page_opens - page_opens - deltas[1],
@@ -795,6 +845,12 @@ class AgentRunner:
                             remaining_page_budget,
                         ),
                     )
+                    external_urls = list(dict.fromkeys(strategy_candidate_urls + external_urls))[
+                        : min(
+                            self.agent_config.automatic_page_inspection_count,
+                            remaining_page_budget,
+                        )
+                    ]
                     if external_urls:
                         self._emit(
                             "external_source_inspection_started",
@@ -1138,6 +1194,30 @@ class AgentRunner:
                 break
         return accepted
 
+    @classmethod
+    def _consultation_strategy_queries(
+        cls,
+        consultations: list[dict[str, Any]],
+        *,
+        prior_queries: list[str],
+        limit: int,
+    ) -> list[str]:
+        accepted: list[str] = []
+        comparison_queries = list(prior_queries)
+        for consultation in consultations:
+            if consultation.get("review_role") != "Search strategy specialist":
+                continue
+            queries = cls._strategy_queries_from_result(
+                consultation,
+                prior_queries=comparison_queries,
+                limit=limit - len(accepted),
+            )
+            accepted.extend(queries)
+            comparison_queries.extend(queries)
+            if len(accepted) >= limit:
+                break
+        return accepted
+
     async def _automatic_external_query_strategy(
         self,
         *,
@@ -1173,19 +1253,25 @@ class AgentRunner:
                 "system": (
                     "You are a query-strategy controller for an audited public-web research task. "
                     "Do not search for benchmark dumps, canaries, leaked questions, or reference "
-                    "answers. The primary researcher is repeating low-yield searches. Identify the "
-                    "likely underlying entity and the unresolved relation, then design genuinely "
-                    "different retrieval routes. Prefer entity-plus-role, attribution, history, "
-                    "source-language, primary-record, and contrastive-candidate queries. Do not "
+                    "answers. The primary researcher is repeating low-yield searches. Do not "
+                    "inherit its leading hypothesis. Extract up to three viable underlying entities "
+                    "from all evidence and independent reviews, including the strongest alternative, "
+                    "then design genuinely different retrieval routes that discriminate among them "
+                    "and resolve the requested relation. Prefer entity-plus-role, attribution, "
+                    "history, source-language, primary-record, and contrastive-candidate queries. "
+                    "For a historical attribution, include a broad history or origins query rather "
+                    "than only paraphrases of 'first documented.' Do not "
                     "paraphrase the full clue repeatedly, and do not create novelty by merely "
                     "changing quotes, punctuation, or date ranges. Return exactly one JSON object "
                     "and no markdown."
                 ),
                 "query": (
                     f"Return exactly this schema with {limit} concise public-web queries: "
-                    '{"analysis":"brief diagnosis","queries":["query 1","query 2"]}. '
-                    "Every query must test a different semantic route and target the unresolved "
-                    "answer rather than re-verifying clues that are already established."
+                    '{"analysis":"brief diagnosis","entity_candidates":["candidate"],'
+                    '"queries":["query 1","query 2"]}. Every query must test a different semantic '
+                    "route and target the unresolved answer rather than re-verifying clues that are "
+                    "already established. Include queries for the strongest alternative entity, not "
+                    "only the researcher's current favorite."
                 ),
                 "context": context,
             }
@@ -1418,25 +1504,47 @@ class AgentRunner:
     ) -> tuple[AgentAction | None, dict[str, Any]]:
         if self.external_model is None or request_budget <= 0:
             return None, {"ok": False, "error": "external model is unavailable"}
-        recent_evidence = [
-            truncate_middle(str(message.get("content") or ""), 12_000)
-            for message in messages
-            if message.get("role") in {"tool", "user"}
-        ][-6:]
+        evidence_messages = [
+            message for message in messages if message.get("role") in {"tool", "user"}
+        ]
+        milestone_messages = [
+            message
+            for message in evidence_messages
+            if any(
+                marker in str(message.get("content") or "")
+                for marker in (
+                    "independent_external_consultation",
+                    "external_search_strategy_recovery",
+                    "automatic_page_inspection",
+                )
+            )
+        ]
+        selected_evidence: list[dict[str, Any]] = []
+        selected_ids: set[int] = set()
+        for message in evidence_messages[:2] + milestone_messages[-4:] + evidence_messages[-6:]:
+            identity = id(message)
+            if identity in selected_ids:
+                continue
+            selected_ids.add(identity)
+            selected_evidence.append(message)
+        representative_evidence = [
+            truncate_middle(str(message.get("content") or ""), 8_000)
+            for message in selected_evidence
+        ]
         reasoning_history = [
-            truncate_middle(str(message.get("reasoning") or ""), 12_000)
+            truncate_middle(str(message.get("reasoning") or ""), 8_000)
             for message in transcript
             if message.get("role") == "assistant" and message.get("reasoning")
-        ][-6:]
+        ][-4:]
         context = canonical_json(
             {
                 "question": question,
                 "latest_assistant_reasoning": truncate_middle(
-                    str(response.raw_message.get("reasoning") or ""), 30_000
+                    str(response.raw_message.get("reasoning") or ""), 20_000
                 ),
                 "latest_assistant_content": truncate_middle(response.content, 10_000),
                 "recent_reasoning_history": reasoning_history,
-                "recent_tool_evidence": recent_evidence,
+                "representative_tool_evidence": representative_evidence,
                 "saved_notes": notes[-10:],
             }
         )
@@ -1444,15 +1552,19 @@ class AgentRunner:
             (
                 "Candidate matrix and independent solver",
                 "Enumerate every plausible answer-type-valid candidate in the evidence and solve "
-                "the question independently. For each clue, distinguish directly supported, "
-                "inferred, unknown, and contradicted. Missing source text is unknown, not a "
-                "contradiction. Rank candidates comparatively and return your single best concrete "
-                "answer as a final JSON action even when some clues remain unresolved.",
+                "the question independently. Resolve any underlying entity before selecting the "
+                "requested person, title, place, or other final answer. For each clue, distinguish "
+                "directly supported, inferred, unknown, and contradicted. Missing source text is "
+                "unknown, not a contradiction, but an exact matched source saying the required "
+                "outcome did not occur is affirmative contradiction. Rank candidates comparatively "
+                "and return your single best concrete answer as a final JSON action.",
             ),
             (
                 "Comparative adversarial auditor",
                 "Challenge the leading candidate with minimal-pair alternatives and concrete "
                 "objections involving dates, aliases, units, identity, ordering, and answer type. "
+                "Independently re-evaluate the underlying entity and the strongest alternative; do "
+                "not inherit the latest assistant hypothesis. "
                 "Classify each objection as contradiction, unresolved evidence, source-quality "
                 "concern, identity mismatch, or answer-type mismatch. Source silence is not "
                 "disproof, and skepticism has no veto. Compare alternatives and return the single "
@@ -1466,6 +1578,10 @@ class AgentRunner:
                     "You are an independent reviewer for an audited public-web research task. Do "
                     "not look for benchmark dumps, canaries, leaked questions, or reference "
                     "answers. Use public-web research if available and never fabricate citations. "
+                    "Preserve earlier milestone evidence as well as recent evidence. A directly "
+                    "matched source showing that a required outcome did not occur is a contradiction, "
+                    "not mere uncertainty. For an answer requested exactly as printed in a dated "
+                    "article, prefer the article's explicit name form over historical guesswork. "
                     "This is a forced-answer task: return exactly one final JSON action with a "
                     "concrete answer of the requested type. Unresolved evidence lowers confidence "
                     "but never permits an abstention or meta-answer."
@@ -1521,7 +1637,9 @@ class AgentRunner:
                     '"exact_answer":"short answer","confidence":0,'
                     '"citations":["https://public-source.example/"]}. '
                     "Do not merely follow the latest candidate or majority vote. Resolve conflicts "
-                    "against direct evidence, but do not let universal skepticism veto the "
+                    "against direct evidence. Recheck the underlying entity before selecting an "
+                    "attributed person, and treat an exact source's negative result as affirmative "
+                    "contradiction rather than ambiguity. Do not let universal skepticism veto the "
                     "best-supported candidate. Return the best concrete exact answer now."
                 ),
                 "context": adjudication_context,
@@ -1732,8 +1850,10 @@ class AgentRunner:
         roles = [
             (
                 "Independent candidate investigator",
-                "Solve the research question independently. Propose the exact answer, a "
-                "constraint-by-constraint evidence chain, likely primary sources or URLs, and "
+                "Resolve the underlying entity before proposing the exact answer. Weight the most "
+                "discriminating clues first, and reject any entity affirmatively contradicted by "
+                "the exact experiment, event, date, or relation in a matched source. Propose the "
+                "answer, a constraint-by-constraint evidence chain, primary sources or URLs, and "
                 "high-information follow-up queries. State uncertainty explicitly.",
             ),
             (
@@ -1744,9 +1864,14 @@ class AgentRunner:
             ),
             (
                 "Search strategy specialist",
-                "Design the next highest-yield public-web searches and source-opening plan. Favor "
-                "quoted fragments, primary records, alternate terminology, archives, and sources "
-                "that can discriminate among plausible candidates.",
+                "Do not inherit the current leading hypothesis. Identify up to three viable "
+                "underlying entities, including the strongest alternative, and design seven "
+                "meaningfully different searches that discriminate among them and resolve the "
+                "requested answer relation. Include broad entity-plus-history/origins/attribution "
+                "routes as well as primary-record or source-language routes. Do not create novelty "
+                "by changing only quotes, punctuation, or date ranges. Return exactly one JSON "
+                'object with schema {"analysis":"brief diagnosis","entity_candidates":['
+                '"candidate"],"queries":["query 1","query 2"]} and no markdown.',
             ),
             (
                 "Independent final-answer reviewer",
@@ -1769,10 +1894,17 @@ class AgentRunner:
             }
             for role, task in roles[:request_count]
         ]
-        return await self.external_model.ask_many(
+        results = await self.external_model.ask_many(
             requests,
             request_namespace=request_namespace,
         )
+        return [
+            {
+                **result,
+                "review_role": roles[index][0] if index < len(roles) else "unknown",
+            }
+            for index, result in enumerate(results)
+        ]
 
     def _parse_action(
         self,
