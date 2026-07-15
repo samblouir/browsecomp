@@ -77,6 +77,21 @@ _RESEARCH_LINK_TERMS = frozenset(
         "traditional",
     }
 )
+_EVIDENCE_SIGNAL_TERMS = frozenset(
+    {
+        "according",
+        "attributed",
+        "credited",
+        "described",
+        "documented",
+        "earliest",
+        "first",
+        "identified",
+        "named",
+        "reported",
+        "wrote",
+    }
+)
 _ABSTENTION_ANSWER = re.compile(
     r"^(?:"
     r"unknown|none|n/?a|inconclusive|undetermined|"
@@ -851,6 +866,7 @@ class AgentRunner:
                         limit=min(self.agent_config.max_batch_size, remaining_search_budget),
                     )
                     strategy_candidate_urls: list[str] = []
+                    evidence_pages: list[dict[str, Any]] = []
                     if consultation_strategy_queries:
                         self._emit(
                             "external_strategy_search_started",
@@ -934,6 +950,11 @@ class AgentRunner:
                             notes,
                             request_namespace=chain_namespace,
                         )
+                        evidence_pages.extend(
+                            page
+                            for page in external_pages.get("pages") or []
+                            if isinstance(page, dict)
+                        )
                         deltas = tuple(
                             left + right
                             for left, right in zip(
@@ -991,6 +1012,11 @@ class AgentRunner:
                                 notes,
                                 request_namespace=chain_namespace,
                             )
+                            evidence_pages.extend(
+                                page
+                                for page in related_pages.get("pages") or []
+                                if isinstance(page, dict)
+                            )
                             for page in related_pages.get("pages") or []:
                                 if isinstance(page, dict) and isinstance(page.get("links"), list):
                                     page["links"] = page["links"][:20]
@@ -1015,6 +1041,27 @@ class AgentRunner:
                                 failed=int(related_pages.get("failed") or 0),
                                 retrieved_chars=related_page_deltas[3],
                             )
+                    evidence_highlights = self._evidence_highlights(
+                        evidence_pages,
+                        queries=consultation_strategy_queries,
+                        limit=self.agent_config.max_batch_size,
+                    )
+                    if evidence_highlights:
+                        # Keep this outer result field last so the bounded tool-result
+                        # tail retains decisive passages in long research contexts.
+                        result["verified_evidence_highlights"] = {
+                            "instruction": (
+                                "Reconcile these query-ranked passages against the candidate-by-"
+                                "clue ledger before searching again or finalizing. They are direct "
+                                "page excerpts, not an answer supplied by the controller."
+                            ),
+                            "passages": evidence_highlights,
+                        }
+                        self._emit(
+                            "evidence_highlights_attached",
+                            step=step,
+                            passage_count=len(evidence_highlights),
+                        )
                     self._emit(
                         "automatic_external_completed",
                         step=step,
@@ -1633,6 +1680,87 @@ class AgentRunner:
                 sequence += 1
         ranked.sort()
         return [url for _, _, url in ranked[:limit]]
+
+    @classmethod
+    def _evidence_highlights(
+        cls,
+        pages: list[dict[str, Any]],
+        *,
+        queries: list[str],
+        limit: int,
+    ) -> list[dict[str, str]]:
+        if limit <= 0:
+            return []
+        query_terms = [
+            cls._search_query_terms(query) - _LINK_STOPWORDS for query in queries if query.strip()
+        ]
+        ranked: list[tuple[int, int, int, dict[str, str]]] = []
+        for page_index, page in enumerate(pages):
+            if not isinstance(page, dict) or page.get("error"):
+                continue
+            text = str(page.get("text") or "").strip()
+            if not text:
+                continue
+            title = str(page.get("title") or "").strip()
+            url = str(page.get("final_url") or page.get("requested_url") or "").strip()
+            page_candidates: list[tuple[int, int, dict[str, str]]] = []
+            for passage_index, raw_passage in enumerate(re.split(r"\n\s*\n+", text)):
+                passage = re.sub(r"\s+", " ", raw_passage).strip()
+                if len(passage) < 40:
+                    continue
+                passage_words = re.findall(r"[a-z0-9]+", passage.casefold())
+                prose_without_links = re.sub(r"\[[^\]]+\]\([^)]+\)", " ", passage)
+                prose_words = re.findall(r"[a-z0-9]+", prose_without_links.casefold())
+                # Reader output often contains navigation cards whose entire text is
+                # a query-relevant link title. They are useful for link expansion,
+                # but are not evidence excerpts and otherwise outrank page prose.
+                if len(prose_words) < 8 or len(prose_words) * 3 < len(passage_words):
+                    continue
+                terms = cls._search_query_terms(passage) - _LINK_STOPWORDS
+                query_overlap = max((len(terms & item) for item in query_terms), default=0)
+                signal_overlap = len(terms & _EVIDENCE_SIGNAL_TERMS)
+                research_overlap = len(terms & _RESEARCH_LINK_TERMS)
+                if query_overlap < 2 and signal_overlap == 0:
+                    continue
+                attribution_window = re.search(
+                    r"\b(?:according to|attributed to|credited (?:to|with)|documented by|"
+                    r"described by|reported by|written by)\b(.{0,120})",
+                    passage,
+                    flags=re.I,
+                )
+                named_attribution = bool(
+                    attribution_window
+                    and re.search(
+                        r"\b[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+)+\b",
+                        attribution_window.group(1),
+                    )
+                )
+                score = (
+                    query_overlap * 10
+                    + signal_overlap * 24
+                    + research_overlap * 2
+                    + int(named_attribution) * 80
+                )
+                page_candidates.append(
+                    (
+                        -score,
+                        passage_index,
+                        {
+                            "title": title,
+                            "url": url,
+                            "passage": truncate_middle(passage, 1_600),
+                        },
+                    )
+                )
+            page_candidates.sort()
+            for negative_score, passage_index, highlight in page_candidates[:2]:
+                ranked.append((negative_score, page_index, passage_index, highlight))
+        ranked.sort()
+        selected = ranked[:limit]
+        # Weakest-to-strongest keeps the best passage at the very end of the
+        # bounded tool result and finalizer evidence sample.
+        selected.reverse()
+        return [highlight for _, _, _, highlight in selected]
 
     @classmethod
     def _unopened_candidate_urls(

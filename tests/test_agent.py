@@ -314,6 +314,7 @@ class SuccessfulBrowser:
 class LinkedSuccessfulBrowser:
     async def fetch(self, url):
         links = []
+        text = "verified page evidence"
         if url != "https://example.test/related-history":
             links = [
                 {
@@ -321,11 +322,16 @@ class LinkedSuccessfulBrowser:
                     "url": "https://example.test/related-history",
                 }
             ]
+        else:
+            text = (
+                "Entity history and origins. According to explorer Ada Lovelace, the first "
+                "documented use of the entity appeared in a primary chronicle."
+            )
         return PageDocument(
             requested_url=url,
             final_url=url,
             title="Evidence",
-            text="verified page evidence",
+            text=text,
             content_type="text/plain",
             status_code=200,
             links=links,
@@ -744,6 +750,46 @@ def test_related_evidence_urls_rank_semantic_same_site_links() -> None:
     ]
 
 
+def test_evidence_highlights_keep_strongest_at_bounded_tail() -> None:
+    pages = [
+        {
+            "title": "Entity history",
+            "final_url": "https://source.test/history",
+            "text": (
+                "General entity history discusses many unrelated details and background.\n\n"
+                "According to explorer Ada Lovelace, the first documented use of the entity "
+                "appeared in a primary chronicle."
+            ),
+        },
+        {
+            "title": "Entity shop",
+            "final_url": "https://source.test/shop",
+            "text": "Buy the entity today with free delivery and seasonal discounts.",
+        },
+        {
+            "title": "Entity navigation",
+            "final_url": "https://source.test/navigation",
+            "text": (
+                "[Entity history origins earliest written account and first documentation]"
+                "(https://source.test/history)"
+            ),
+        },
+    ]
+    highlights = AgentRunner._evidence_highlights(
+        pages,
+        queries=["entity history origins earliest written account"],
+        limit=3,
+    )
+    assert highlights[-1] == {
+        "title": "Entity history",
+        "url": "https://source.test/history",
+        "passage": (
+            "According to explorer Ada Lovelace, the first documented use of the entity "
+            "appeared in a primary chronicle."
+        ),
+    }
+
+
 def test_unopened_candidate_urls_skip_prior_pages() -> None:
     result = {
         "results": [
@@ -1008,6 +1054,7 @@ async def test_agent_executes_structured_external_search_strategy(tmp_path: Path
     ]
     assert any('"strategy_search"' in row for row in tool_results)
     assert any('"related_source_page_inspection"' in row for row in tool_results)
+    assert any('"verified_evidence_highlights"' in row for row in tool_results)
 
 
 @pytest.mark.asyncio
