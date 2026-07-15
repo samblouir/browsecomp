@@ -673,6 +673,25 @@ def test_candidate_urls_are_selected_round_robin() -> None:
     ]
 
 
+def test_strategy_candidate_urls_add_depth_to_priority_query() -> None:
+    result = {
+        "searches": [
+            {
+                "results": [
+                    {"url": "https://priority.test/1"},
+                    {"url": "https://priority.test/2"},
+                ]
+            },
+            {"results": [{"url": "https://alternative.test/1"}]},
+        ]
+    }
+    assert AgentRunner._strategy_candidate_urls(result, 3) == [
+        "https://priority.test/1",
+        "https://priority.test/2",
+        "https://alternative.test/1",
+    ]
+
+
 def test_unopened_candidate_urls_skip_prior_pages() -> None:
     result = {
         "results": [
@@ -920,6 +939,7 @@ async def test_agent_executes_structured_external_search_strategy(tmp_path: Path
     assert outcome.errors == []
     assert outcome.search_calls == 4
     assert outcome.external_model_calls == 3
+    assert outcome.page_opens == 2
     assert search.queries == [
         "first clue",
         "second clue",

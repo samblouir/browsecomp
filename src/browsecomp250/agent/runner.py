@@ -665,21 +665,30 @@ class AgentRunner:
                 if strategy_recovery is not None:
                     result["external_search_strategy_recovery"] = strategy_recovery
                 projected_search_calls = search_calls + deltas[0]
-                if self._should_automatically_inspect_pages(
-                    action=action,
-                    action_result=result,
-                    search_streak=search_streak,
-                ):
+                should_inspect_pages = strategy_recovery is not None or (
+                    self._should_automatically_inspect_pages(
+                        action=action,
+                        action_result=result,
+                        search_streak=search_streak,
+                    )
+                )
+                if should_inspect_pages:
                     remaining_page_budget = max(
                         0,
                         self.agent_config.max_page_opens - page_opens,
                     )
-                    candidate_urls = self._candidate_urls(
-                        result,
-                        min(
-                            self.agent_config.automatic_page_inspection_count,
-                            remaining_page_budget,
+                    inspection_limit = min(
+                        (
+                            self.agent_config.max_batch_size
+                            if strategy_recovery is not None
+                            else self.agent_config.automatic_page_inspection_count
                         ),
+                        remaining_page_budget,
+                    )
+                    candidate_urls = (
+                        self._strategy_candidate_urls(result, inspection_limit)
+                        if strategy_recovery is not None
+                        else self._candidate_urls(result, inspection_limit)
                     )
                     if candidate_urls:
                         self._emit(
@@ -822,9 +831,9 @@ class AgentRunner:
                         )
                         if strategy_search.get("ok"):
                             last_successful_search_result = strategy_search
-                            strategy_candidate_urls = self._candidate_urls(
+                            strategy_candidate_urls = self._strategy_candidate_urls(
                                 strategy_search,
-                                self.agent_config.automatic_page_inspection_count,
+                                self.agent_config.max_batch_size,
                             )
                         self._emit(
                             "external_strategy_search_completed",
@@ -845,11 +854,16 @@ class AgentRunner:
                             remaining_page_budget,
                         ),
                     )
+                    source_inspection_limit = min(
+                        (
+                            self.agent_config.max_batch_size
+                            if strategy_candidate_urls
+                            else self.agent_config.automatic_page_inspection_count
+                        ),
+                        remaining_page_budget,
+                    )
                     external_urls = list(dict.fromkeys(strategy_candidate_urls + external_urls))[
-                        : min(
-                            self.agent_config.automatic_page_inspection_count,
-                            remaining_page_budget,
-                        )
+                        :source_inspection_limit
                     ]
                     if external_urls:
                         self._emit(
@@ -1260,7 +1274,9 @@ class AgentRunner:
                     "and resolve the requested relation. Prefer entity-plus-role, attribution, "
                     "history, source-language, primary-record, and contrastive-candidate queries. "
                     "For a historical attribution, include a broad history or origins query rather "
-                    "than only paraphrases of 'first documented.' Do not "
+                    "than only paraphrases of 'first documented.' Put the highest-yield unresolved-"
+                    "relation query first. Use one entity per query, no OR chains, and at most twelve "
+                    "terms per query. Do not "
                     "paraphrase the full clue repeatedly, and do not create novelty by merely "
                     "changing quotes, punctuation, or date ranges. Return exactly one JSON object "
                     "and no markdown."
@@ -1454,6 +1470,30 @@ class AgentRunner:
                 if len(urls) >= limit:
                     return urls
         return urls
+
+    @classmethod
+    def _strategy_candidate_urls(cls, result: dict[str, Any], limit: int) -> list[str]:
+        if limit <= 0:
+            return []
+        priority_urls: list[str] = []
+        searches = result.get("searches")
+        if isinstance(searches, list):
+            for search in searches:
+                if not isinstance(search, dict) or not isinstance(search.get("results"), list):
+                    continue
+                for row in search["results"][:2]:
+                    if not isinstance(row, dict):
+                        continue
+                    url = str(row.get("url") or "").strip()
+                    if url and url not in priority_urls:
+                        priority_urls.append(url)
+                break
+        for url in cls._candidate_urls(result, 10_000):
+            if url not in priority_urls:
+                priority_urls.append(url)
+            if len(priority_urls) >= limit:
+                break
+        return priority_urls[:limit]
 
     @classmethod
     def _unopened_candidate_urls(
@@ -1868,8 +1908,10 @@ class AgentRunner:
                 "underlying entities, including the strongest alternative, and design seven "
                 "meaningfully different searches that discriminate among them and resolve the "
                 "requested answer relation. Include broad entity-plus-history/origins/attribution "
-                "routes as well as primary-record or source-language routes. Do not create novelty "
-                "by changing only quotes, punctuation, or date ranges. Return exactly one JSON "
+                "routes as well as primary-record or source-language routes. Put the highest-yield "
+                "query for the unresolved answer relation first. Use one entity per query, no OR "
+                "chains, and at most twelve terms per query. Do not create novelty by changing only "
+                "quotes, punctuation, or date ranges. Return exactly one JSON "
                 'object with schema {"analysis":"brief diagnosis","entity_candidates":['
                 '"candidate"],"queries":["query 1","query 2"]} and no markdown.',
             ),
