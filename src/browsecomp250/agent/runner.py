@@ -458,21 +458,21 @@ class AgentRunner:
                 retrieved_chars=retrieved_chars,
                 external_model_calls=external_model_calls,
             )
-            if force_final_this_turn and budget_violation:
+            if force_final_this_turn:
                 forced_nonfinal_rejections += 1
-            elif not force_final_this_turn:
+            else:
                 forced_nonfinal_rejections = 0
             rescue_threshold = self.agent_config.automatic_finalization_rescue_after_rejections
             rescue_seconds = self.agent_config.automatic_finalization_rescue_after_seconds
             elapsed_seconds = time.perf_counter() - started
-            budget_rescue_due = bool(
-                budget_violation
+            forced_rescue_due = bool(
+                force_final_this_turn
                 and rescue_threshold > 0
                 and forced_nonfinal_rejections >= rescue_threshold
             )
             time_rescue_due = bool(rescue_seconds > 0 and elapsed_seconds >= rescue_seconds)
             if (
-                (budget_rescue_due or time_rescue_due)
+                (forced_rescue_due or time_rescue_due)
                 and not automatic_finalization_rescue_attempted
                 and self.external_model is not None
                 and self.external_model_config.enabled
@@ -482,7 +482,7 @@ class AgentRunner:
                 self._emit(
                     "automatic_finalization_rescue_started",
                     step=step,
-                    reason="hard_budget" if budget_rescue_due else "wall_clock",
+                    reason="forced_final_rejection" if forced_rescue_due else "wall_clock",
                     rejection_count=forced_nonfinal_rejections,
                     elapsed_seconds=elapsed_seconds,
                 )
