@@ -109,6 +109,17 @@ BC250_SEARXNG_BASE_URL=http://127.0.0.1:8080
 
 SearXNG must enable JSON output. It should be isolated from unrelated users so engine configuration and rate limiting remain fixed during a campaign.
 
+### Server-side Yahoo
+
+```dotenv
+BC250_SEARCH_PROVIDER=yahoo
+```
+
+This keyless adapter parses Yahoo's server-rendered organic results and unwraps
+Yahoo redirect URLs before exposing them to the agent. It does not launch or
+control a user's browser. Treat it as a distinct provider in protocol locks and
+result reports; do not mix its rows into a Brave-only headline claim.
+
 ## 5. Configure grading
 
 The smoke profile uses the deterministic diagnostic grader. The headline profile requires the semantic LLM grader.

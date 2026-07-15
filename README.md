@@ -145,12 +145,17 @@ The `headline` command refuses configurations that weaken major minimum budgets,
 - Tavily Search API
 - Serper
 - SearXNG
+- Server-side Yahoo organic search (no user browser or API key)
 
 All providers are normalized to the same internal result schema. Fix the provider, region, language, safe-search setting, result count, and evaluation dates across compared systems.
 
-The Star configs fix search to the Brave API and expose the caller-owned
+The Star configs default to the Brave API and permit an explicit
+`BC250_SEARCH_PROVIDER` override that is frozen in each run's protocol lock.
+Campaign reports must name the provider actually used; results collected with
+different providers must be reported as separate strata or with per-row
+provenance. The configs expose the caller-owned
 `ask_external_model` tool through an isolated Star-2 agent that can use the
-same Brave, page-open, and find tools. Hard items receive one strategy-first
+same search, page-open, and find tools. Hard items receive one strategy-first
 helper after eight searches; further review is evidence-triggered rather than a
 mandatory full council. The generic production-broker adapter remains available
 for comparison configs. See

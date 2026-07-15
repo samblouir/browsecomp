@@ -106,8 +106,10 @@ Freeze and report:
 - any rate-limit-induced failures.
 
 Search results are part of the evaluated agent system. A bare-model claim is valid only when every model uses the same external scaffold.
-The Star campaign profiles use the Brave Search API and do not use a personal
-Chrome session.
+The Star campaign profiles default to the Brave Search API and do not use a
+personal Chrome session. An explicit provider override is frozen in the run
+lock. Reports must disclose the resolved provider and must not present rows from
+different providers as one uniform-provider score.
 
 ## Browser contract
 

@@ -95,6 +95,8 @@ class SearchConfig(StrictConfigModel):
         "tavily",
         "serper",
         "searxng",
+        "yahoo",
+        "yahoo_jina",
     ] = "brave"
     results_per_call: int = Field(default=10, ge=1, le=20)
     country: str = "US"
@@ -128,7 +130,12 @@ class SearchConfig(StrictConfigModel):
             "tavily": self.tavily_api_key,
             "serper": self.serper_api_key,
             "searxng": "",
+            "yahoo": "",
+            "yahoo_jina": "",
         }[self.provider]
+
+    def requires_api_key(self) -> bool:
+        return self.provider in {"brave", "hybrid", "tavily", "serper"}
 
 
 class ExternalModelConfig(StrictConfigModel):

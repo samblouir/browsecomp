@@ -62,8 +62,28 @@ URLs. One engine may fail without discarding the other engine's results. The
 logical search budget counts requested queries, not the number of engines used;
 reports must disclose hybrid search rather than calling it a Brave-only run.
 
-The Star smoke, development, and headline profiles use `brave` unconditionally.
-Do not use either Chrome-backed provider for those runs.
+Do not use either Chrome-backed provider for headline or development runs.
+
+### Server-side Yahoo
+
+```dotenv
+BC250_SEARCH_PROVIDER=yahoo
+```
+
+The direct Yahoo adapter requests the server-rendered result page, extracts
+organic result titles, snippets, and links, and unwraps Yahoo tracking redirects
+to their destination URLs. It does not use a personal browser and requires no
+API credential. Provider HTML is not a stable API contract, so live doctor and
+fanout smokes are required before a campaign starts.
+
+`yahoo_jina` is retained as a diagnostic fallback through the public Jina
+reader. Anonymous reader rate limits make it unsuitable as the primary provider
+for a concurrent headline campaign.
+
+The Star smoke, development, and headline profiles default to `brave` but honor
+an explicit `BC250_SEARCH_PROVIDER` override. The resolved provider is frozen in
+the run lock. Any provider change within a larger development campaign must be
+reported as a separate stratum or with exact per-row provenance.
 
 ### Tavily
 

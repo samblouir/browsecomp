@@ -9,6 +9,8 @@ from browsecomp250.search.google_chrome import GoogleChromeSearchProvider
 from browsecomp250.search.hybrid import HybridSearchProvider
 from browsecomp250.search.searxng import SearXNGSearchProvider
 from browsecomp250.search.tavily import TavilySearchProvider
+from browsecomp250.search.yahoo import YahooSearchProvider
+from browsecomp250.search.yahoo_jina import YahooJinaSearchProvider
 from browsecomp250.types import SearchResult
 
 
@@ -81,6 +83,72 @@ async def test_searxng_adapter(tmp_path: Path) -> None:
         client,
     )
     assert (await provider.search("q"))[0].source == "searxng"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_yahoo_jina_adapter(tmp_path: Path) -> None:
+    markdown = """\
+## Search Results
+
+1. [![Image](https://s.yimg.com/icon.png) NASA https://www.nasa.gov ### Apollo 11 - NASA](https://www.nasa.gov/mission/apollo-11/) The primary objective was a crewed lunar landing.
+2. [Yahoo Scout](https://scout.yahoo.com/chat?q=apollo)
+3. [![Image](https://s.yimg.com/icon2.png) Britannica ### Apollo 11 | History](https://www.britannica.com/topic/Apollo-11) Independent history.
+"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "search.yahoo.com" in str(request.url)
+        return httpx.Response(200, text=markdown, request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = YahooJinaSearchProvider(
+        SearchConfig(
+            provider="yahoo_jina",
+            cache_mode="off",
+            cache_path=tmp_path / "cache.sqlite3",
+        ),
+        client,
+    )
+    results = await provider.search("Apollo 11", count=5)
+    assert [result.url for result in results] == [
+        "https://www.nasa.gov/mission/apollo-11/",
+        "https://www.britannica.com/topic/Apollo-11",
+    ]
+    assert results[0].title == "Apollo 11 - NASA"
+    assert results[0].snippet == "The primary objective was a crewed lunar landing."
+    assert results[0].source == "yahoo_jina"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_yahoo_adapter_unwraps_result_urls(tmp_path: Path) -> None:
+    document = """\
+<div id="web"><ol class="searchCenterMiddle">
+  <li><div class="algo-sr">
+    <div class="compTitle"><a href="https://r.search.yahoo.com/x/RU=https%3A%2F%2Fwww.nasa.gov%2Fmission%2Fapollo-11%2F/RK=2/x"><h3>Apollo 11 - NASA</h3></a></div>
+    <div class="compText">The primary objective was a crewed lunar landing.</div>
+  </div></li>
+</ol></div>
+"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["p"] == "Apollo 11"
+        return httpx.Response(200, text=document, request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = YahooSearchProvider(
+        SearchConfig(
+            provider="yahoo",
+            cache_mode="off",
+            cache_path=tmp_path / "cache.sqlite3",
+        ),
+        client,
+    )
+    results = await provider.search("Apollo 11", count=5)
+    assert results[0].url == "https://www.nasa.gov/mission/apollo-11/"
+    assert results[0].title == "Apollo 11 - NASA"
+    assert results[0].snippet == "The primary objective was a crewed lunar landing."
+    assert results[0].source == "yahoo"
     await client.aclose()
 
 

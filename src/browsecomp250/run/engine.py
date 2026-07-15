@@ -54,8 +54,8 @@ class BenchmarkEngine:
             problems.append("model API key is empty")
 
         search_key = self.config.search.selected_api_key()
-        if self.config.search.provider != "searxng":
-            if not search_key and self.config.search.provider not in {"google_chrome"}:
+        if self.config.search.requires_api_key():
+            if not search_key:
                 problems.append(f"{self.config.search.provider} search API key is empty")
             elif search_key and is_placeholder_secret(search_key):
                 problems.append(f"{self.config.search.provider} search API key is a placeholder")

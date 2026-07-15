@@ -752,7 +752,9 @@
             "hybrid",
             "tavily",
             "serper",
-            "searxng"
+            "searxng",
+            "yahoo",
+            "yahoo_jina"
           ],
           "title": "Provider",
           "type": "string"

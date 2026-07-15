@@ -39,7 +39,7 @@ model:
       frontierrl_max_denoising_steps: 48
 
 search:
-  provider: brave
+  provider: "${BC250_SEARCH_PROVIDER:-brave}"
   results_per_call: 10
   country: US
   language: en

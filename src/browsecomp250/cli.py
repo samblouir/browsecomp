@@ -190,7 +190,7 @@ def doctor(
     checks.append(
         (
             "Search credentials",
-            search_key_usable or cfg.search.provider in {"searxng", "google_chrome"},
+            search_key_usable or not cfg.search.requires_api_key(),
             (
                 f"{cfg.search.provider}; placeholder credential"
                 if search_key and not search_key_usable
@@ -333,10 +333,7 @@ def _validate_headline(cfg: AppConfig, allow_unpinned_dataset: bool) -> list[str
         )
     elif cfg.grader.api_key and is_placeholder_secret(cfg.grader.api_key):
         problems.append("grader API key is an obvious placeholder")
-    if (
-        cfg.search.provider not in {"searxng", "google_chrome"}
-        and not cfg.search.selected_api_key()
-    ):
+    if cfg.search.requires_api_key() and not cfg.search.selected_api_key():
         problems.append(f"{cfg.search.provider} search API key is empty")
     elif is_placeholder_secret(cfg.search.selected_api_key()):
         problems.append(f"{cfg.search.provider} search API key is an obvious placeholder")

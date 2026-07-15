@@ -10,6 +10,8 @@ from .hybrid import HybridSearchProvider
 from .searxng import SearXNGSearchProvider
 from .serper import SerperSearchProvider
 from .tavily import TavilySearchProvider
+from .yahoo import YahooSearchProvider
+from .yahoo_jina import YahooJinaSearchProvider
 
 
 def create_search_provider(
@@ -22,6 +24,8 @@ def create_search_provider(
         "tavily": TavilySearchProvider,
         "serper": SerperSearchProvider,
         "searxng": SearXNGSearchProvider,
+        "yahoo": YahooSearchProvider,
+        "yahoo_jina": YahooJinaSearchProvider,
     }
     return providers[config.provider](config, client=client)
 
