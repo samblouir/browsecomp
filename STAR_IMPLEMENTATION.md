@@ -44,8 +44,9 @@ Both `configs/star-smoke.yaml` and `configs/star-headline.yaml` enforce:
   not discard a completed research trajectory;
 - remaining-budget clipping for batch actions and one structured external
   finalization rescue if the backend still requests evidence at the hard cap;
-- a 900-second wall-clock trigger for that same one-shot finalizer, preserving
-  enough of the 1,800-second task budget for finalization and grading;
+- a 900-second wall-clock trigger for a three-review candidate, constraint, and
+  falsification council followed by an independent structured adjudicator,
+  preserving enough of the 1,800-second task budget for grading;
 - bounded wall time and action budgets; and
 - durable per-step heartbeat and event logs.
 

@@ -1,5 +1,5 @@
 run:
-  name: browsecomp250-star7-dev-assisted-v7-20260715
+  name: browsecomp250-star7-dev-assisted-v8-20260715
   output_dir: runs
   seed: 20260715
   concurrency: 5

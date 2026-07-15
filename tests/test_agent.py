@@ -179,18 +179,23 @@ class FakeExternalModelBroker:
 
 class RescueExternalModelBroker:
     async def ask_many(self, requests, *, request_namespace):
-        del requests, request_namespace
+        del request_namespace
+        result = {
+            "ok": True,
+            "status": "succeeded",
+            "request_id": "emr_rescue",
+            "content": (
+                '{"action":"final","explanation":"evidence resolves it",'
+                '"exact_answer":"Answer","confidence":0.9,'
+                '"citations":["https://example.test"]}'
+            ),
+        }
         return [
             {
-                "ok": True,
-                "status": "succeeded",
-                "request_id": "emr_rescue",
-                "content": (
-                    '{"action":"final","explanation":"evidence resolves it",'
-                    '"exact_answer":"Answer","confidence":90,'
-                    '"citations":["https://example.test"]}'
-                ),
+                **result,
+                "request_id": f"emr_rescue_{index}",
             }
+            for index, _ in enumerate(requests, start=1)
         ]
 
 
@@ -630,7 +635,8 @@ async def test_hard_budget_uses_one_external_finalization_rescue(tmp_path: Path)
     outcome = await runner.run("Question", request_namespace="run:item:rescue")
     assert outcome.status == "completed"
     assert outcome.exact_answer == "Answer"
-    assert outcome.external_model_calls == 1
+    assert outcome.confidence == 90
+    assert outcome.external_model_calls == 4
 
 
 @pytest.mark.asyncio
@@ -656,13 +662,14 @@ async def test_wall_clock_uses_one_external_finalization_rescue(tmp_path: Path) 
             enabled=True,
             default_provider="mock",
             allowed_providers=["mock"],
-            max_calls_per_task=4,
+            max_calls_per_task=1,
         ),
         external_model_broker=RescueExternalModelBroker(),
     )
     outcome = await runner.run("Question", request_namespace="run:item:timed-rescue")
     assert outcome.status == "completed"
     assert outcome.exact_answer == "Answer"
+    assert outcome.confidence == 90
     assert outcome.search_calls == 0
     assert outcome.external_model_calls == 1
 

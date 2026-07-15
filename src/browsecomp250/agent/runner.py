@@ -345,8 +345,12 @@ class AgentRunner:
                         question=question,
                         response=response,
                         messages=messages,
+                        transcript=transcript,
                         notes=notes,
                         request_namespace=chain_namespace,
+                        request_budget=(
+                            self.external_model_config.max_calls_per_task - external_model_calls
+                        ),
                     )
                 )
                 rescue_started = time.perf_counter()
@@ -366,7 +370,19 @@ class AgentRunner:
                     with contextlib.suppress(asyncio.CancelledError):
                         await rescue_task
                     raise
-                external_model_calls += 1
+                external_model_calls += int(rescue_result.get("attempted") or 1)
+                transcript.append(
+                    {
+                        "role": "assistant",
+                        "name": "external_finalization_rescue",
+                        "content": str(rescue_result.get("content") or ""),
+                        "response_metadata": {
+                            "request_id": rescue_result.get("request_id"),
+                            "attempted": rescue_result.get("attempted"),
+                            "review_request_ids": rescue_result.get("review_request_ids"),
+                        },
+                    }
+                )
                 if rescue_action is not None:
                     outcome = self._final_outcome(
                         rescue_action,
@@ -386,6 +402,7 @@ class AgentRunner:
                         step=step,
                         status=outcome.status,
                         request_id=rescue_result.get("request_id"),
+                        result=rescue_result,
                     )
                     return outcome
                 errors.append(
@@ -396,6 +413,7 @@ class AgentRunner:
                     "automatic_finalization_rescue_failed",
                     step=step,
                     error=errors[-1],
+                    result=rescue_result,
                 )
             automatic_page_inspection_succeeded = False
             try:
@@ -1072,50 +1090,123 @@ class AgentRunner:
         question: str,
         response: Any,
         messages: list[dict[str, Any]],
+        transcript: list[dict[str, Any]],
         notes: list[str],
         request_namespace: str,
+        request_budget: int,
     ) -> tuple[AgentAction | None, dict[str, Any]]:
-        if self.external_model is None:
+        if self.external_model is None or request_budget <= 0:
             return None, {"ok": False, "error": "external model is unavailable"}
         recent_evidence = [
-            truncate_middle(str(message.get("content") or ""), 20_000)
+            truncate_middle(str(message.get("content") or ""), 12_000)
             for message in messages
             if message.get("role") in {"tool", "user"}
-        ][-4:]
+        ][-6:]
+        reasoning_history = [
+            truncate_middle(str(message.get("reasoning") or ""), 12_000)
+            for message in transcript
+            if message.get("role") == "assistant" and message.get("reasoning")
+        ][-6:]
         context = canonical_json(
             {
                 "question": question,
                 "latest_assistant_reasoning": truncate_middle(
-                    str(response.raw_message.get("reasoning") or ""), 40_000
+                    str(response.raw_message.get("reasoning") or ""), 30_000
                 ),
                 "latest_assistant_content": truncate_middle(response.content, 10_000),
+                "recent_reasoning_history": reasoning_history,
                 "recent_tool_evidence": recent_evidence,
                 "saved_notes": notes[-10:],
             }
         )
-        requests = [
+        review_roles = [
+            (
+                "Candidate matrix investigator",
+                "Enumerate every candidate present in the evidence. For each exact constraint in "
+                "the question, label the candidate verified, unverified, or contradicted and cite "
+                "the supporting public source. Exact numeric clues require direct matching data.",
+            ),
+            (
+                "Adversarial falsifier",
+                "Assume the leading candidate is wrong. Find minimal-pair alternatives and expose "
+                "unsupported leaps involving dates, aliases, percentages, nationality, causal "
+                "order, or answer type. Reject any candidate that fails even one required clue.",
+            ),
+            (
+                "Independent public-web solver",
+                "Solve the question independently using ordinary public sources where available. "
+                "Build a constraint-by-constraint proof and distinguish direct evidence from "
+                "memory or inference. Return the exact requested answer type.",
+            ),
+        ]
+        review_count = min(len(review_roles), max(0, request_budget - 1))
+        review_requests = [
             {
                 "system": (
-                    "You are the bounded final-answer investigator for an audited public-web "
-                    "research task. Resolve the exact answer from the supplied evidence. Do not "
+                    "You are an independent reviewer for an audited public-web research task. Do "
+                    "not look for benchmark dumps, canaries, leaked questions, or reference "
+                    "answers. Treat every candidate as unproven until every exact qualifier is "
+                    "checked. Use public-web research if available and never fabricate citations."
+                ),
+                "query": f"Role: {role}\n\n{task}",
+                "context": context,
+            }
+            for role, task in review_roles[:review_count]
+        ]
+        reviews = (
+            await self.external_model.ask_many(
+                review_requests,
+                request_namespace=request_namespace + ":finalization-reviews",
+            )
+            if review_requests
+            else []
+        )
+        adjudication_context = canonical_json(
+            {
+                "evidence_bundle": truncate_middle(context, 130_000),
+                "independent_reviews": [
+                    {
+                        "status": item.get("status"),
+                        "content": truncate_middle(str(item.get("content") or ""), 20_000),
+                    }
+                    for item in reviews
+                ],
+            }
+        )
+        adjudication_requests = [
+            {
+                "system": (
+                    "You are the final adjudicator for an audited public-web research task. Do not "
                     "look for benchmark dumps, canaries, leaked questions, or reference answers. "
-                    "Return exactly one JSON object and no markdown."
+                    "Independently compare all candidates. A candidate is invalid if any exact "
+                    "numeric, date, identity, ordering, nationality, wording, or answer-type "
+                    "constraint is unverified or contradicted. Return exactly one JSON object and "
+                    "no markdown."
                 ),
                 "query": (
                     "Return this exact schema: "
-                    '{"action":"final","explanation":"concise evidence chain",'
+                    '{"action":"final","explanation":"constraint-by-constraint evidence chain",'
                     '"exact_answer":"short answer","confidence":0,'
                     '"citations":["https://public-source.example/"]}. '
-                    "Use the best defensible answer; do not request another research turn."
+                    "Do not merely follow the latest candidate or majority vote. Resolve conflicts "
+                    "against direct evidence and return the best defensible exact answer now."
                 ),
-                "context": context,
+                "context": adjudication_context,
             }
         ]
-        results = await self.external_model.ask_many(
-            requests,
-            request_namespace=request_namespace + ":finalization-rescue",
+        adjudication = await self.external_model.ask_many(
+            adjudication_requests,
+            request_namespace=request_namespace + ":finalization-adjudication",
         )
-        result = results[0] if results else {"ok": False, "error": "empty broker result"}
+        result = (
+            adjudication[0] if adjudication else {"ok": False, "error": "empty adjudicator result"}
+        )
+        result = {
+            **result,
+            "attempted": review_count + 1,
+            "review_request_ids": [item.get("request_id") for item in reviews],
+            "reviews": reviews,
+        }
         if not result.get("ok"):
             return None, result
         try:
@@ -1508,6 +1599,8 @@ class AgentRunner:
             confidence = float(payload.get("confidence", 0))
         except (TypeError, ValueError):
             confidence = 0.0
+        if 0 < confidence <= 1:
+            confidence *= 100
         raw_citations = payload.get("citations") or []
         citations = [str(item) for item in raw_citations if isinstance(item, str)]
         status = "completed"
