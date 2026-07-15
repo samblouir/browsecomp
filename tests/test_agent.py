@@ -673,7 +673,7 @@ def test_candidate_urls_are_selected_round_robin() -> None:
     ]
 
 
-def test_strategy_candidate_urls_add_depth_to_priority_query() -> None:
+def test_strategy_candidate_urls_preserve_route_breadth_before_depth() -> None:
     result = {
         "searches": [
             {
@@ -687,8 +687,8 @@ def test_strategy_candidate_urls_add_depth_to_priority_query() -> None:
     }
     assert AgentRunner._strategy_candidate_urls(result, 3) == [
         "https://priority.test/1",
-        "https://priority.test/2",
         "https://alternative.test/1",
+        "https://priority.test/2",
     ]
 
 

@@ -1273,10 +1273,10 @@ class AgentRunner:
                     "then design genuinely different retrieval routes that discriminate among them "
                     "and resolve the requested relation. Prefer entity-plus-role, attribution, "
                     "history, source-language, primary-record, and contrastive-candidate queries. "
-                    "For a historical attribution, include a broad history or origins query rather "
-                    "than only paraphrases of 'first documented.' Put the highest-yield unresolved-"
-                    "relation query first. Use one entity per query, no OR chains, and at most twelve "
-                    "terms per query. Do not "
+                    "For a historical attribution, put a broad subject history or origins query "
+                    "first; do not lead with answer-shaped wording such as 'first person credited.' "
+                    "Put the highest-yield unresolved-relation query first. Use one entity per "
+                    "query, no OR chains, and at most twelve terms per query. Do not "
                     "paraphrase the full clue repeatedly, and do not create novelty by merely "
                     "changing quotes, punctuation, or date ranges. Return exactly one JSON object "
                     "and no markdown."
@@ -1473,27 +1473,10 @@ class AgentRunner:
 
     @classmethod
     def _strategy_candidate_urls(cls, result: dict[str, Any], limit: int) -> list[str]:
-        if limit <= 0:
-            return []
-        priority_urls: list[str] = []
-        searches = result.get("searches")
-        if isinstance(searches, list):
-            for search in searches:
-                if not isinstance(search, dict) or not isinstance(search.get("results"), list):
-                    continue
-                for row in search["results"][:2]:
-                    if not isinstance(row, dict):
-                        continue
-                    url = str(row.get("url") or "").strip()
-                    if url and url not in priority_urls:
-                        priority_urls.append(url)
-                break
-        for url in cls._candidate_urls(result, 10_000):
-            if url not in priority_urls:
-                priority_urls.append(url)
-            if len(priority_urls) >= limit:
-                break
-        return priority_urls[:limit]
+        # Preserve one evidence slot per strategy route before inspecting deeper
+        # ranks from any route. External strategists can order imperfectly, and
+        # route coverage is more robust than betting two slots on the first query.
+        return cls._candidate_urls(result, limit)
 
     @classmethod
     def _unopened_candidate_urls(
@@ -1908,9 +1891,11 @@ class AgentRunner:
                 "underlying entities, including the strongest alternative, and design seven "
                 "meaningfully different searches that discriminate among them and resolve the "
                 "requested answer relation. Include broad entity-plus-history/origins/attribution "
-                "routes as well as primary-record or source-language routes. Put the highest-yield "
-                "query for the unresolved answer relation first. Use one entity per query, no OR "
-                "chains, and at most twelve terms per query. Do not create novelty by changing only "
+                "routes as well as primary-record or source-language routes. For a historical "
+                "attribution, put a broad subject history or origins query first; do not lead with "
+                "answer-shaped wording such as 'first person credited.' Put the highest-yield query "
+                "for the unresolved answer relation first. Use one entity per query, no OR chains, "
+                "and at most twelve terms per query. Do not create novelty by changing only "
                 "quotes, punctuation, or date ranges. Return exactly one JSON "
                 'object with schema {"analysis":"brief diagnosis","entity_candidates":['
                 '"candidate"],"queries":["query 1","query 2"]} and no markdown.',
