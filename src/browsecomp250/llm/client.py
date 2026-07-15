@@ -104,12 +104,13 @@ class OpenAICompatibleClient:
         for attempt in range(self.settings.max_retries + 1):
             started = time.perf_counter()
             try:
-                response = await self.client.post(
-                    self.chat_completions_url,
-                    headers=self.headers(),
-                    json=body,
-                    timeout=self.settings.timeout_seconds,
-                )
+                async with asyncio.timeout(self.settings.timeout_seconds):
+                    response = await self.client.post(
+                        self.chat_completions_url,
+                        headers=self.headers(),
+                        json=body,
+                        timeout=self.settings.timeout_seconds,
+                    )
                 if response.status_code in {408, 409, 425, 429} or response.status_code >= 500:
                     raise httpx.HTTPStatusError(
                         f"retryable status {response.status_code}",
@@ -119,7 +120,12 @@ class OpenAICompatibleClient:
                 response.raise_for_status()
                 data = response.json()
                 return self._parse_response(data, time.perf_counter() - started)
-            except (httpx.TimeoutException, httpx.NetworkError, httpx.HTTPStatusError) as exc:
+            except (
+                TimeoutError,
+                httpx.TimeoutException,
+                httpx.NetworkError,
+                httpx.HTTPStatusError,
+            ) as exc:
                 last_error = exc
                 retryable = not isinstance(exc, httpx.HTTPStatusError) or (
                     exc.response.status_code in {408, 409, 425, 429}
@@ -142,7 +148,10 @@ class OpenAICompatibleClient:
             response_text = last_error.response.text.strip()
             if response_text:
                 detail = f"; response={response_text[:2000]}"
-        raise ModelAPIError(f"Chat completion failed after retries: {last_error}{detail}")
+        error_name = type(last_error).__name__ if last_error is not None else "UnknownError"
+        raise ModelAPIError(
+            f"Chat completion failed after retries: {error_name}: {last_error}{detail}"
+        )
 
     def _parse_response(self, data: dict[str, Any], latency: float) -> ModelResponse:
         choices = data.get("choices")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -131,5 +132,30 @@ async def test_nonretryable_api_error_includes_response_detail() -> None:
         raw_client,
     )
     with pytest.raises(ModelAPIError, match="unsupported field"):
+        await client.chat([{"role": "user", "content": "hello"}])
+    await raw_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_request_has_hard_wall_clock_timeout() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(60)
+        return httpx.Response(200, json={}, request=request)
+
+    raw_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleClient(
+        ClientSettings(
+            api_base="https://model.test/v1",
+            api_key="secret",
+            model="model",
+            temperature=0.3,
+            max_output_tokens=16384,
+            timeout_seconds=0.01,
+            max_retries=0,
+        ),
+        raw_client,
+    )
+
+    with pytest.raises(ModelAPIError, match="TimeoutError"):
         await client.chat([{"role": "user", "content": "hello"}])
     await raw_client.aclose()
