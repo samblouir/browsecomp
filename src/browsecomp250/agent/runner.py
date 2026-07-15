@@ -82,6 +82,8 @@ class AgentRunner:
         require_open = False
         search_streak = 0
         automatic_external_attempted = False
+        automatic_finalization_rescue_attempted = False
+        forced_nonfinal_rejections = 0
         last_action_fingerprint: str | None = None
         consecutive_duplicate_actions = 0
         last_successful_search_result: dict[str, Any] | None = None
@@ -255,6 +257,20 @@ class AgentRunner:
                 self._emit("protocol_retry", step=step, error=str(exc))
                 continue
 
+            action, clipped_from = self._clip_action_to_remaining_budget(
+                action,
+                search_calls=search_calls,
+                page_opens=page_opens,
+                external_model_calls=external_model_calls,
+            )
+            if clipped_from is not None:
+                self._emit(
+                    "action_budget_clipped",
+                    step=step,
+                    action=action.action,
+                    requested_count=clipped_from,
+                    retained_count=self._batched_action_size(action),
+                )
             self._emit("action_selected", step=step, action=action.action, payload=action.payload)
 
             if action.action == "final":
@@ -296,6 +312,83 @@ class AgentRunner:
                 retrieved_chars=retrieved_chars,
                 external_model_calls=external_model_calls,
             )
+            if force_final_this_turn and budget_violation:
+                forced_nonfinal_rejections += 1
+            elif not force_final_this_turn:
+                forced_nonfinal_rejections = 0
+            rescue_threshold = self.agent_config.automatic_finalization_rescue_after_rejections
+            if (
+                budget_violation
+                and rescue_threshold > 0
+                and forced_nonfinal_rejections >= rescue_threshold
+                and not automatic_finalization_rescue_attempted
+                and self.external_model is not None
+                and self.external_model_config.enabled
+                and external_model_calls < self.external_model_config.max_calls_per_task
+            ):
+                automatic_finalization_rescue_attempted = True
+                self._emit(
+                    "automatic_finalization_rescue_started",
+                    step=step,
+                    rejection_count=forced_nonfinal_rejections,
+                )
+                rescue_task = asyncio.create_task(
+                    self._automatic_external_finalization(
+                        question=question,
+                        response=response,
+                        messages=messages,
+                        notes=notes,
+                        request_namespace=chain_namespace,
+                    )
+                )
+                rescue_started = time.perf_counter()
+                try:
+                    while True:
+                        done, _ = await asyncio.wait({rescue_task}, timeout=15)
+                        if rescue_task in done:
+                            rescue_action, rescue_result = rescue_task.result()
+                            break
+                        self._emit(
+                            "automatic_finalization_rescue_wait",
+                            step=step,
+                            elapsed_seconds=time.perf_counter() - rescue_started,
+                        )
+                except BaseException:
+                    rescue_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await rescue_task
+                    raise
+                external_model_calls += 1
+                if rescue_action is not None:
+                    outcome = self._final_outcome(
+                        rescue_action,
+                        started=started,
+                        step=step,
+                        usage=usage,
+                        transcript=transcript,
+                        errors=errors,
+                        search_calls=search_calls,
+                        page_opens=page_opens,
+                        find_calls=find_calls,
+                        retrieved_chars=retrieved_chars,
+                        external_model_calls=external_model_calls,
+                    )
+                    self._emit(
+                        "automatic_finalization_rescue_completed",
+                        step=step,
+                        status=outcome.status,
+                        request_id=rescue_result.get("request_id"),
+                    )
+                    return outcome
+                errors.append(
+                    "Automatic finalization rescue failed: "
+                    + str(rescue_result.get("error") or rescue_result.get("content") or "unknown")
+                )
+                self._emit(
+                    "automatic_finalization_rescue_failed",
+                    step=step,
+                    error=errors[-1],
+                )
             automatic_page_inspection_succeeded = False
             try:
                 if duplicate_action:
@@ -576,6 +669,23 @@ class AgentRunner:
                 retrieved_chars += deltas[3]
                 if action.action == "ask_external_model":
                     external_model_calls += int(result.get("attempted", 0))
+                if (
+                    force_final
+                    and result.get("ok")
+                    and not self._near_budget(
+                        search_calls,
+                        page_opens,
+                        find_calls,
+                        retrieved_chars,
+                        external_model_calls,
+                    )
+                ):
+                    force_final = False
+                    self._emit(
+                        "forced_final_released_after_new_evidence",
+                        step=step,
+                        action=action.action,
+                    )
                 self._check_budgets(
                     search_calls,
                     page_opens,
@@ -745,6 +855,52 @@ class AgentRunner:
             for row in searches
         )
 
+    @staticmethod
+    def _batched_action_size(action: AgentAction) -> int:
+        key = {
+            "search_many": "queries",
+            "open_many": "urls",
+            "ask_external_model": "requests",
+        }.get(action.action)
+        values = action.payload.get(key) if key else None
+        return len(values) if isinstance(values, list) else 1
+
+    def _clip_action_to_remaining_budget(
+        self,
+        action: AgentAction,
+        *,
+        search_calls: int,
+        page_opens: int,
+        external_model_calls: int,
+    ) -> tuple[AgentAction, int | None]:
+        budget_shapes = {
+            "search_many": (
+                "queries",
+                max(0, self.agent_config.max_search_calls - search_calls),
+            ),
+            "open_many": (
+                "urls",
+                max(0, self.agent_config.max_page_opens - page_opens),
+            ),
+            "ask_external_model": (
+                "requests",
+                max(
+                    0,
+                    self.external_model_config.max_calls_per_task - external_model_calls,
+                ),
+            ),
+        }
+        shape = budget_shapes.get(action.action)
+        if shape is None:
+            return action, None
+        key, remaining = shape
+        values = action.payload.get(key)
+        if not isinstance(values, list) or remaining <= 0 or len(values) <= remaining:
+            return action, None
+        payload = dict(action.payload)
+        payload[key] = values[:remaining]
+        return AgentAction(action=action.action, payload=payload), len(values)
+
     def _action_budget_violation(
         self,
         action: AgentAction,
@@ -901,6 +1057,67 @@ class AgentRunner:
                 if len(urls) >= limit:
                     return urls
         return urls
+
+    async def _automatic_external_finalization(
+        self,
+        *,
+        question: str,
+        response: Any,
+        messages: list[dict[str, Any]],
+        notes: list[str],
+        request_namespace: str,
+    ) -> tuple[AgentAction | None, dict[str, Any]]:
+        if self.external_model is None:
+            return None, {"ok": False, "error": "external model is unavailable"}
+        recent_evidence = [
+            truncate_middle(str(message.get("content") or ""), 20_000)
+            for message in messages
+            if message.get("role") in {"tool", "user"}
+        ][-4:]
+        context = canonical_json(
+            {
+                "question": question,
+                "latest_assistant_reasoning": truncate_middle(
+                    str(response.raw_message.get("reasoning") or ""), 40_000
+                ),
+                "latest_assistant_content": truncate_middle(response.content, 10_000),
+                "recent_tool_evidence": recent_evidence,
+                "saved_notes": notes[-10:],
+            }
+        )
+        requests = [
+            {
+                "system": (
+                    "You are the bounded final-answer investigator for an audited public-web "
+                    "research task. Resolve the exact answer from the supplied evidence. Do not "
+                    "look for benchmark dumps, canaries, leaked questions, or reference answers. "
+                    "Return exactly one JSON object and no markdown."
+                ),
+                "query": (
+                    "Return this exact schema: "
+                    '{"action":"final","explanation":"concise evidence chain",'
+                    '"exact_answer":"short answer","confidence":0,'
+                    '"citations":["https://public-source.example/"]}. '
+                    "Use the best defensible answer; do not request another research turn."
+                ),
+                "context": context,
+            }
+        ]
+        results = await self.external_model.ask_many(
+            requests,
+            request_namespace=request_namespace + ":finalization-rescue",
+        )
+        result = results[0] if results else {"ok": False, "error": "empty broker result"}
+        if not result.get("ok"):
+            return None, result
+        try:
+            action = parse_json_action(str(result.get("content") or ""))
+            if action.action != "final":
+                raise ProtocolError("external finalizer returned a non-final action")
+        except ProtocolError as exc:
+            result = {**result, "ok": False, "error": str(exc)}
+            return None, result
+        return action, result
 
     async def _automatic_external_consultations(
         self,

@@ -53,7 +53,7 @@ The model cannot execute shell commands, arbitrary Python, code interpreters, fi
 | Budget | Default |
 |---|---:|
 | Agent turns | 80 |
-| Search calls | 40 |
+| Search calls | 80 |
 | Page opens | 100 |
 | Find calls | 80 |
 | Retrieved characters | 2,000,000 |
@@ -76,6 +76,13 @@ uninspected URLs from the latest successful result batch. After three
 consecutive identical actions it requires the final tool while retaining the
 same complete tool schema, preventing deterministic retry loops without
 changing the model-visible capabilities mid-chain.
+
+Batch actions that would only slightly cross a hard budget are clipped to the
+remaining allowance rather than rejected wholesale. The Star profiles permit
+80 logical searches. If the backend still emits non-final research requests on
+two turns after the true hard cap, one independent external finalizer receives
+the accumulated audited evidence and must return the standard final-action
+schema. This bounded fallback is disclosed as part of the evaluation scaffold.
 
 `headline` enforces lower bounds rather than exact values to permit endpoint-specific output settings, but comparable campaigns should use identical values.
 

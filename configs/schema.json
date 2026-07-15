@@ -109,6 +109,13 @@
           "title": "Max Consecutive Duplicate Actions",
           "type": "integer"
         },
+        "automatic_finalization_rescue_after_rejections": {
+          "default": 0,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Automatic Finalization Rescue After Rejections",
+          "type": "integer"
+        },
         "system_prompt_path": {
           "anyOf": [
             {

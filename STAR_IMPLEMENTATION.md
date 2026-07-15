@@ -42,6 +42,8 @@ Both `configs/star-smoke.yaml` and `configs/star-headline.yaml` enforce:
 - protocol normalization for unambiguous singular/batch tool-name mismatches;
 - ten idempotent model-transport retries so brief Agent endpoint restarts do
   not discard a completed research trajectory;
+- remaining-budget clipping for batch actions and one structured external
+  finalization rescue if the backend still requests evidence at the hard cap;
 - bounded wall time and action budgets; and
 - durable per-step heartbeat and event logs.
 

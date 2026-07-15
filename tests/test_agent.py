@@ -116,6 +116,23 @@ class DuplicateSearchModel:
         return None
 
 
+class BudgetRescueModel:
+    def __init__(self):
+        self.responses = iter(
+            [
+                ModelResponse(content='{"action":"search","query":"first clue"}'),
+                ModelResponse(content='{"action":"search","query":"final verification"}'),
+            ]
+        )
+
+    async def chat(self, messages, **kwargs):
+        del messages, kwargs
+        return next(self.responses)
+
+    async def close(self):
+        return None
+
+
 class FakeSearch:
     def __init__(self, tmp_path: Path):
         self.config = SearchConfig(provider="searxng", cache_path=tmp_path / "s.sqlite3")
@@ -157,6 +174,23 @@ class FakeExternalModelBroker:
                 "content": f"critique {item['query']}",
             }
             for index, item in enumerate(requests, start=1)
+        ]
+
+
+class RescueExternalModelBroker:
+    async def ask_many(self, requests, *, request_namespace):
+        del requests, request_namespace
+        return [
+            {
+                "ok": True,
+                "status": "succeeded",
+                "request_id": "emr_rescue",
+                "content": (
+                    '{"action":"final","explanation":"evidence resolves it",'
+                    '"exact_answer":"Answer","confidence":90,'
+                    '"citations":["https://example.test"]}'
+                ),
+            }
         ]
 
 
@@ -380,6 +414,25 @@ def test_search_many_is_rejected_before_overspending_budget(tmp_path: Path) -> N
     )
 
 
+def test_search_many_is_clipped_to_remaining_budget(tmp_path: Path) -> None:
+    runner = AgentRunner(
+        ModelConfig(api_base="http://model.test/v1", api_key="k", model="m"),
+        AgentConfig(max_search_calls=4, max_batch_size=5),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=FakeModel(),
+    )
+    action, requested_count = runner._clip_action_to_remaining_budget(
+        AgentAction(action="search_many", payload={"queries": ["a", "b", "c"]}),
+        search_calls=2,
+        page_opens=0,
+        external_model_calls=0,
+    )
+    assert requested_count == 3
+    assert action.payload["queries"] == ["a", "b"]
+
+
 @pytest.mark.asyncio
 async def test_agent_executes_external_model_fanout_as_one_action(tmp_path: Path) -> None:
     broker = FakeExternalModelBroker()
@@ -545,6 +598,39 @@ async def test_repeated_search_opens_fresh_evidence_instead_of_looping(tmp_path:
         if row.get("role") == "user" and row.get("content", "").startswith("Tool result:")
     ]
     assert any("controller_recovery" in row for row in tool_results)
+
+
+@pytest.mark.asyncio
+async def test_hard_budget_uses_one_external_finalization_rescue(tmp_path: Path) -> None:
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=3,
+            max_search_calls=1,
+            automatic_finalization_rescue_after_rejections=1,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=BudgetRescueModel(),
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=4,
+        ),
+        external_model_broker=RescueExternalModelBroker(),
+    )
+    outcome = await runner.run("Question", request_namespace="run:item:rescue")
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Answer"
+    assert outcome.external_model_calls == 1
 
 
 @pytest.mark.asyncio
