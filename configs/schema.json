@@ -842,6 +842,16 @@
           "title": "Max Retries",
           "type": "integer"
         },
+        "live_preflight": {
+          "default": false,
+          "title": "Live Preflight",
+          "type": "boolean"
+        },
+        "live_preflight_query": {
+          "default": "OpenAI official website",
+          "title": "Live Preflight Query",
+          "type": "string"
+        },
         "cache_mode": {
           "default": "readwrite",
           "enum": [

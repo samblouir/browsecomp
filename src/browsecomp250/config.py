@@ -130,6 +130,8 @@ class SearchConfig(StrictConfigModel):
     safe_search: Literal["off", "moderate", "strict"] = "moderate"
     timeout_seconds: float = Field(default=30, gt=0)
     max_retries: int = Field(default=4, ge=0, le=20)
+    live_preflight: bool = False
+    live_preflight_query: str = "OpenAI official website"
     cache_mode: Literal["off", "read", "write", "readwrite", "refresh"] = "readwrite"
     cache_path: Path = Path("~/.cache/browsecomp250/search-cache.sqlite3")
     brave_api_key: str = ""
@@ -159,6 +161,14 @@ class SearchConfig(StrictConfigModel):
     yahoo_min_interval_seconds: float = Field(default=0.35, ge=0, le=10)
     yahoo_error_cooldown_seconds: float = Field(default=3.0, ge=0, le=60)
     hybrid_mode: Literal["merge", "google_first", "brave_first"] = "merge"
+
+    @field_validator("live_preflight_query")
+    @classmethod
+    def validate_live_preflight_query(cls, value: str) -> str:
+        value = " ".join(value.split()).strip()
+        if not value:
+            raise ValueError("live_preflight_query must be non-empty")
+        return value
 
     def selected_api_key(self) -> str:
         return {

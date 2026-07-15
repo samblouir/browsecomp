@@ -254,9 +254,7 @@ async def test_engine_rejects_invalid_exact_rank_selection(
 
     with pytest.raises(ValueError, match=message):
         await BenchmarkEngine(config).run(**kwargs)  # type: ignore[arg-type]
-    assert not (
-        tmp_path / "runs" / "fixture-invalid-ranks" / "run.lock.json"
-    ).exists()
+    assert not (tmp_path / "runs" / "fixture-invalid-ranks" / "run.lock.json").exists()
 
 
 @pytest.mark.asyncio
@@ -428,3 +426,46 @@ async def test_engine_rejects_placeholder_openrouter_search_key_before_lock(
     with pytest.raises(RuntimeError, match="openrouter_exa search API key is a placeholder"):
         await BenchmarkEngine(config).run(limit=1)
     assert not (tmp_path / "runs" / "fixture-placeholder-openrouter" / "run.lock.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_engine_rejects_failed_live_search_probe_before_writing_lock(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import browsecomp250.run.engine as engine_module
+
+    class FailingLiveProbe(_FakeClosable):
+        closed = False
+        probe_calls = 0
+
+        async def probe_live(self) -> None:
+            self.probe_calls += 1
+            raise RuntimeError("401 invalid search credential")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    provider = FailingLiveProbe()
+    config = AppConfig(
+        run=RunConfig(name="fixture-live-search-failure", output_dir=tmp_path / "runs"),
+        dataset=DatasetConfig(),
+        model=ModelConfig(api_base="https://model.test/v1", api_key="key", model="star"),
+        search=SearchConfig(
+            provider="searxng",
+            live_preflight=True,
+            cache_path=tmp_path / "search.sqlite3",
+        ),
+        browser=BrowserConfig(cache_path=tmp_path / "pages.sqlite3"),
+        agent=AgentConfig(),
+        grader=GraderConfig(mode="deterministic"),
+        report=ReportConfig(),
+    )
+    monkeypatch.setattr(engine_module, "create_search_provider", lambda _config: provider)
+
+    with pytest.raises(RuntimeError, match="Search live preflight failed before launch"):
+        await BenchmarkEngine(config).run(limit=1)
+
+    assert provider.probe_calls == 1
+    assert provider.closed is True
+    assert not (tmp_path / "runs" / "fixture-live-search-failure" / "run.lock.json").exists()

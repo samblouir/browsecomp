@@ -174,9 +174,7 @@ class BenchmarkEngine:
             if len(ranks) != len(set(ranks)):
                 raise ValueError("ranks must not contain duplicates")
             invalid_ranks = [
-                rank
-                for rank in ranks
-                if rank < 0 or rank >= self.config.dataset.subset_size
+                rank for rank in ranks if rank < 0 or rank >= self.config.dataset.subset_size
             ]
             if invalid_ranks:
                 raise ValueError(
@@ -201,6 +199,18 @@ class BenchmarkEngine:
                 f"at least {_MIN_RUN_FREE_BYTES / 1024**3:.0f} GiB required"
             )
         self._validate_runtime_credentials()
+        if self.config.search.live_preflight:
+            preflight_provider = create_search_provider(self.config.search)
+            try:
+                try:
+                    await preflight_provider.probe_live()
+                except Exception as exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        "Search live preflight failed before launch: "
+                        f"provider={self.config.search.provider}: {exc}"
+                    ) from exc
+            finally:
+                await preflight_provider.close()
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.storage.write_private_readme()
         write_dataset_manifest(self.config.dataset)

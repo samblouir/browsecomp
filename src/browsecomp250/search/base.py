@@ -62,19 +62,48 @@ class SearchProvider(ABC):
                     f"Read-only search cache miss for provider={self.name}, query={query!r}"
                 )
 
+        results = await self._search_with_retries(query, count, offset)
+        if self.config.cache_mode in {"write", "readwrite", "refresh"}:
+            self.cache.put(request, [asdict(item) for item in results])
+        return results
+
+    async def probe_live(self, query: str | None = None, count: int = 1) -> list[SearchResult]:
+        """Probe the live transport without reading or writing the result cache."""
+
+        normalized_query = " ".join((query or self.config.live_preflight_query).split()).strip()
+        if not normalized_query:
+            raise SearchError("Search live preflight query is empty")
+        results = await self._search_with_retries(
+            normalized_query,
+            min(count, self.config.results_per_call, 20),
+            0,
+        )
+        if not results:
+            raise SearchError(f"{self.name} live preflight returned no results")
+        return results
+
+    async def _search_with_retries(self, query: str, count: int, offset: int) -> list[SearchResult]:
         last_error: Exception | None = None
+        attempts = 0
         for attempt in range(self.config.max_retries + 1):
+            attempts = attempt + 1
             try:
-                results = await self._search_live(query, count, offset)
-                if self.config.cache_mode in {"write", "readwrite", "refresh"}:
-                    self.cache.put(request, [asdict(item) for item in results])
-                return results
+                return await self._search_live(query, count, offset)
             except (httpx.HTTPError, SearchError, ValueError, KeyError) as exc:
                 last_error = exc
-                if attempt >= self.config.max_retries:
+                if attempt >= self.config.max_retries or not self._is_retryable_error(exc):
                     break
                 await asyncio.sleep(min(2**attempt, 15))
-        raise SearchError(f"{self.name} search failed after retries: {last_error}")
+        raise SearchError(
+            f"{self.name} search failed after {attempts} attempt(s): {last_error}"
+        ) from last_error
+
+    @staticmethod
+    def _is_retryable_error(exc: Exception) -> bool:
+        if isinstance(exc, httpx.HTTPStatusError):
+            status = exc.response.status_code
+            return status >= 500 or status in {408, 409, 425, 429}
+        return True
 
     async def search_many(
         self,

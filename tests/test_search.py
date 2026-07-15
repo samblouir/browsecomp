@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from browsecomp250.config import SearchConfig
+from browsecomp250.search.base import SearchError
 from browsecomp250.search.brave import BraveSearchProvider
 from browsecomp250.search.google_chrome import GoogleChromeSearchProvider
 from browsecomp250.search.hybrid import HybridSearchProvider
@@ -40,6 +41,88 @@ async def test_brave_adapter(tmp_path: Path) -> None:
     )
     results = await provider.search("q")
     assert results[0].title == "T"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_live_probe_bypasses_a_warm_search_cache(tmp_path: Path) -> None:
+    requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            200,
+            json={
+                "web": {
+                    "results": [
+                        {
+                            "title": "Live result",
+                            "url": "https://example.test/live",
+                            "description": "Transport reached.",
+                        }
+                    ]
+                }
+            },
+            request=request,
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = BraveSearchProvider(
+        SearchConfig(
+            provider="brave",
+            brave_api_key="secret",
+            cache_mode="readwrite",
+            cache_path=tmp_path / "cache.sqlite3",
+        ),
+        client,
+    )
+    query = "OpenAI official website"
+    provider.cache.put(
+        provider._cache_request(query, 10, 0),
+        [
+            {
+                "title": "Cached result",
+                "url": "https://example.test/cached",
+                "snippet": "Old cache entry.",
+                "rank": 1,
+                "source": "brave",
+                "extra_snippets": [],
+            }
+        ],
+    )
+
+    assert (await provider.search(query))[0].title == "Cached result"
+    assert requests == 0
+    assert (await provider.probe_live(query, count=10))[0].title == "Live result"
+    assert requests == 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_permanent_search_http_error_does_not_consume_retries(tmp_path: Path) -> None:
+    requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(401, json={"error": "invalid key"}, request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = BraveSearchProvider(
+        SearchConfig(
+            provider="brave",
+            brave_api_key="bad-key",
+            cache_mode="off",
+            cache_path=tmp_path / "cache.sqlite3",
+            max_retries=4,
+        ),
+        client,
+    )
+
+    with pytest.raises(SearchError, match=r"failed after 1 attempt\(s\)"):
+        await provider.search("credential preflight")
+    assert requests == 1
     await client.aclose()
 
 
@@ -345,8 +428,6 @@ async def test_read_only_search_cache_fails_closed(tmp_path: Path) -> None:
         ),
         client,
     )
-    from browsecomp250.search.base import SearchError
-
     with pytest.raises(SearchError, match="Read-only search cache miss"):
         await provider.search("uncached")
     assert called is False

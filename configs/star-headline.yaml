@@ -48,6 +48,8 @@ search:
   safe_search: moderate
   timeout_seconds: 30
   max_retries: 4
+  live_preflight: true
+  live_preflight_query: OpenAI official website
   cache_mode: readwrite
   cache_path: ~/.cache/browsecomp250/search-cache.sqlite3
   brave_api_key: "${BC250_BRAVE_API_KEY:-}"
