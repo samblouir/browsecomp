@@ -112,6 +112,13 @@ cannot place a fifth active benchmark chain on any deterministic Star-7 shard.
 Both values are frozen in the run lock and can be overridden only for a
 different documented fleet topology.
 
+The original run/rank namespace is retained when work is delegated to a Star-2
+helper. Helper branches use a separate run-scoped cohort and a deterministic
+branch index, so reviewers and adjudicators spread across the Star-2 fleet while
+all turns within one helper remain sticky. Hash-only helper namespaces are not
+used because they would lose the cohort scope and collapse onto a strict-order
+primary backend.
+
 ## Agent protocols
 
 ### JSON-action protocol

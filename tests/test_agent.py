@@ -637,6 +637,17 @@ def test_benchmark_routing_headers_spread_rows_but_keep_each_chain_sticky() -> N
     assert AgentRunner._routing_headers("helper-namespace") == {
         "X-FRL-Conversation-Id": ("bc250-" + hashlib.sha256(b"helper-namespace").hexdigest()[:24])
     }
+    helper_namespace = namespace + ":finalization-reviews:star2-agent:1"
+    helper_headers = AgentRunner._routing_headers(helper_namespace)
+    assert helper_headers["X-FRL-Conversation-Id"] == (
+        "bc250-" + hashlib.sha256(helper_namespace.encode()).hexdigest()[:24]
+    )
+    assert helper_headers["X-FRL-KV-Cohort-Id"] == (
+        "bc250-" + hashlib.sha256(b"campaign-run:star2-helpers").hexdigest()[:20]
+    )
+    assert helper_headers["X-FRL-KV-Cohort-Index"] == str(
+        int(hashlib.sha256(helper_namespace.encode()).hexdigest()[:12], 16)
+    )
 
 
 @pytest.mark.asyncio
@@ -1107,7 +1118,7 @@ async def test_agent_automatically_attaches_external_reviews_after_search_thresh
     assert outcome.external_model_calls == 2
     assert len(broker.requests) == 1
     requests, namespace = broker.requests[0]
-    assert namespace == hashlib.sha256(b"run:item:auto").hexdigest()[:24]
+    assert namespace == "run:item:auto"
     assert len(requests) == 2
     assert all("Original research question" in request["context"] for request in requests)
 

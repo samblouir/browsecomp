@@ -35,7 +35,9 @@ _SEARCH_TOKEN = re.compile(r"[a-z0-9]+", flags=re.I)
 _STRATEGY_PLACEHOLDER_QUERY = re.compile(
     r"^(?:query|search)(?:\s+(?:query|search))?\s*\d+$", flags=re.I
 )
-_BENCHMARK_REQUEST_NAMESPACE = re.compile(r"^(?P<run>.+):bc250-(?P<rank>\d+)-row-\d+:attempt-\d+$")
+_BENCHMARK_REQUEST_NAMESPACE = re.compile(
+    r"^(?P<run>.+):bc250-(?P<rank>\d+)-row-\d+:attempt-\d+(?P<suffix>.*)$"
+)
 _LINK_STOPWORDS = frozenset(
     {
         "a",
@@ -178,6 +180,7 @@ class AgentRunner:
         namespace_material = request_namespace or question
         request_headers = self._routing_headers(namespace_material)
         chain_namespace = request_headers["X-FRL-Conversation-Id"].removeprefix("bc250-")
+        external_namespace = request_namespace or chain_namespace
 
         initial_user = (
             "Question:\n"
@@ -405,7 +408,7 @@ class AgentRunner:
                         notes=notes,
                         prior_queries=search_query_history,
                         repeated_action=original_action,
-                        request_namespace=chain_namespace,
+                        request_namespace=external_namespace,
                         limit=min(
                             self.agent_config.max_batch_size,
                             self.agent_config.max_search_calls - search_calls,
@@ -610,7 +613,7 @@ class AgentRunner:
                         messages=messages,
                         transcript=transcript,
                         notes=notes,
-                        request_namespace=chain_namespace,
+                        request_namespace=external_namespace,
                         request_budget=(
                             self.external_model_config.max_calls_per_task - external_model_calls
                         ),
@@ -718,7 +721,7 @@ class AgentRunner:
                             ),
                             opened,
                             notes,
-                            request_namespace=chain_namespace,
+                            request_namespace=external_namespace,
                         )
                         for page in page_result.get("pages") or []:
                             if isinstance(page, dict) and isinstance(page.get("links"), list):
@@ -766,7 +769,7 @@ class AgentRunner:
                         action,
                         opened,
                         notes,
-                        request_namespace=chain_namespace,
+                        request_namespace=external_namespace,
                     )
                     if action.action in {"search", "search_many"}:
                         search_query_history.extend(self._search_queries(action))
@@ -825,7 +828,7 @@ class AgentRunner:
                             ),
                             opened,
                             notes,
-                            request_namespace=chain_namespace,
+                            request_namespace=external_namespace,
                         )
                         for page in page_result.get("pages") or []:
                             if isinstance(page, dict) and isinstance(page.get("links"), list):
@@ -865,7 +868,7 @@ class AgentRunner:
                             question=question,
                             current_evidence=result,
                             notes=notes,
-                            request_namespace=chain_namespace,
+                            request_namespace=external_namespace,
                             request_count=request_count,
                         )
                     )
@@ -936,7 +939,7 @@ class AgentRunner:
                             ),
                             opened,
                             notes,
-                            request_namespace=chain_namespace,
+                            request_namespace=external_namespace,
                         )
                         search_query_history.extend(consultation_strategy_queries)
                         result["independent_external_consultation"]["strategy_search"] = (
@@ -1004,7 +1007,7 @@ class AgentRunner:
                             ),
                             opened,
                             notes,
-                            request_namespace=chain_namespace,
+                            request_namespace=external_namespace,
                         )
                         evidence_pages.extend(
                             page
@@ -1066,7 +1069,7 @@ class AgentRunner:
                                 ),
                                 opened,
                                 notes,
-                                request_namespace=chain_namespace,
+                                request_namespace=external_namespace,
                             )
                             evidence_pages.extend(
                                 page
@@ -1313,12 +1316,20 @@ class AgentRunner:
         benchmark_namespace = _BENCHMARK_REQUEST_NAMESPACE.fullmatch(namespace_material)
         if benchmark_namespace is None:
             return headers
+        suffix = benchmark_namespace.group("suffix")
         cohort_material = benchmark_namespace.group("run")
+        if suffix:
+            cohort_material += ":star2-helpers"
         cohort_id = hashlib.sha256(cohort_material.encode("utf-8")).hexdigest()[:20]
+        cohort_index = (
+            int(hashlib.sha256(namespace_material.encode("utf-8")).hexdigest()[:12], 16)
+            if suffix
+            else int(benchmark_namespace.group("rank"))
+        )
         headers.update(
             {
                 "X-FRL-KV-Cohort-Id": f"bc250-{cohort_id}",
-                "X-FRL-KV-Cohort-Index": str(int(benchmark_namespace.group("rank"))),
+                "X-FRL-KV-Cohort-Index": str(cohort_index),
             }
         )
         return headers
