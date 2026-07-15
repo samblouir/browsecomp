@@ -83,6 +83,9 @@ remaining allowance rather than rejected wholesale. The Star profiles permit
 two turns after the true hard cap, one independent external finalizer receives
 the accumulated audited evidence and must return the standard final-action
 schema. This bounded fallback is disclosed as part of the evaluation scaffold.
+The same one-shot finalizer triggers after 900 seconds if the main research
+loop has still not produced a final action, leaving half of the task budget for
+the finalizer, transport retries, and grading.
 
 `headline` enforces lower bounds rather than exact values to permit endpoint-specific output settings, but comparable campaigns should use identical values.
 

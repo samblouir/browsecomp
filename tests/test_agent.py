@@ -634,6 +634,40 @@ async def test_hard_budget_uses_one_external_finalization_rescue(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_wall_clock_uses_one_external_finalization_rescue(tmp_path: Path) -> None:
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=3,
+            max_search_calls=4,
+            automatic_finalization_rescue_after_seconds=0.000001,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=BudgetRescueModel(),
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=4,
+        ),
+        external_model_broker=RescueExternalModelBroker(),
+    )
+    outcome = await runner.run("Question", request_namespace="run:item:timed-rescue")
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Answer"
+    assert outcome.search_calls == 0
+    assert outcome.external_model_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_external_tool_is_exposed_only_when_enabled(tmp_path: Path) -> None:
     model = FinalCaptureModel()
     runner = AgentRunner(

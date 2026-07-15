@@ -1,5 +1,5 @@
 run:
-  name: browsecomp250-star7-dev-assisted-v6-20260715
+  name: browsecomp250-star7-dev-assisted-v7-20260715
   output_dir: runs
   seed: 20260715
   concurrency: 5
@@ -99,6 +99,7 @@ agent:
   automatic_page_inspection_max_chars: 10000
   max_consecutive_duplicate_actions: 3
   automatic_finalization_rescue_after_rejections: 2
+  automatic_finalization_rescue_after_seconds: 900
   system_prompt_path: prompts/star_browsecomp_system.md
 
 external_model:

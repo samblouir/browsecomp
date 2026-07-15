@@ -116,6 +116,12 @@
           "title": "Automatic Finalization Rescue After Rejections",
           "type": "integer"
         },
+        "automatic_finalization_rescue_after_seconds": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Automatic Finalization Rescue After Seconds",
+          "type": "number"
+        },
         "system_prompt_path": {
           "anyOf": [
             {
