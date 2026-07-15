@@ -18,7 +18,7 @@ class OpenRouterExaSearchProvider(SearchProvider):
     """
 
     name = "openrouter_exa"
-    adapter_version = 3
+    adapter_version = 4
 
     _word = re.compile(r"[a-z0-9]+")
     _stopwords = frozenset(
@@ -174,7 +174,7 @@ class OpenRouterExaSearchProvider(SearchProvider):
         """Detect SEO pages that mechanically turn a long query into a result page."""
 
         query_terms = set(cls._terms(query))
-        if len(query_terms) < 7:
+        if len(query_terms) < 3:
             return False
         title_terms = set(cls._terms(title))
         path_terms = set(cls._terms(unquote(urlparse(url).path).replace("-", " ")))
@@ -190,12 +190,23 @@ class OpenRouterExaSearchProvider(SearchProvider):
         unique_snippet_terms = set(snippet_terms)
         novel_ratio = len(novel_snippet_terms) / max(1, len(unique_snippet_terms))
         low_information_snippet = novel_ratio <= 0.55
+        empty_snippet_keyword_stuffing = bool(
+            not snippet_terms
+            and title_coverage >= 0.8
+            and path_coverage >= 0.8
+            and len(title_terms) >= len(query_terms) + 3
+            and len(path_terms) >= len(query_terms) + 3
+        )
         return bool(
-            len(title_terms) >= 7
-            and len(path_terms) >= 7
-            and title_coverage >= 0.6
-            and path_coverage >= 0.6
-            and (repeated_coverage >= 2.0 or low_information_snippet)
+            empty_snippet_keyword_stuffing
+            or (
+                len(query_terms) >= 7
+                and len(title_terms) >= 7
+                and len(path_terms) >= 7
+                and title_coverage >= 0.6
+                and path_coverage >= 0.6
+                and (repeated_coverage >= 2.0 or low_information_snippet)
+            )
         )
 
     def _record_usage(self, usage: Any) -> None:

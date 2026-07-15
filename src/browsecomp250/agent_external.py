@@ -123,7 +123,10 @@ class AgentExternalModelBroker:
                 "candidate and test whether every hard clue preserves its exact relation type. "
                 "Treat the clues as a conjunction: do not rescue a materially contradicted "
                 "candidate by reinterpretation, and return the most specific source-supported "
-                "answer rather than a broader category."
+                "answer rather than a broader category. Do not infer nationality from birthplace "
+                "or primary occupation from one artifact. When the target is unknown, search from "
+                "the rarest constrained collaborator, author, spouse, artifact, quotation, or "
+                "dated source and traverse that relation back to candidate targets."
             ),
             (
                 "Complete through the final tool. Put the full requested deliverable in final."

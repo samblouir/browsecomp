@@ -251,6 +251,28 @@ def test_openrouter_exa_detects_repetitive_query_mirror_but_not_real_article() -
     )
 
 
+def test_openrouter_exa_detects_short_empty_snippet_keyword_stuffing() -> None:
+    query = '"Roman numerals" albums 2001..2007'
+    assert OpenRouterExaSearchProvider._looks_like_query_mirror(
+        query,
+        title=(
+            "English Artists Albums Named With Roman Numerals II III 2001 2007 "
+            "Discography Album Name"
+        ),
+        url=(
+            "https://spam.test/video/english-artists-albums-named-with-roman-numerals-"
+            "ii-iii-2001-2007-discography-album-name/"
+        ),
+        snippet="",
+    )
+    assert not OpenRouterExaSearchProvider._looks_like_query_mirror(
+        query,
+        title="Roman Numerals - The Roman Numerals",
+        url="https://music.test/album/roman-numerals-2006",
+        snippet="A review of the band's 2006 record and its release history.",
+    )
+
+
 @pytest.mark.asyncio
 async def test_tavily_adapter(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
