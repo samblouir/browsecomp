@@ -25,12 +25,26 @@ class RunConfig(StrictConfigModel):
     output_dir: Path = Path("runs")
     seed: int = 0
     concurrency: int = Field(default=1, ge=1, le=256)
+    routing_cohort_size: int = Field(default=0, ge=0, le=256)
+    routing_max_concurrency_per_cohort: int = Field(default=0, ge=0, le=128)
     attempts: int = Field(default=1, ge=1, le=64)
     shuffle: bool = True
     resume: bool = True
     fail_fast: bool = False
     task_timeout_seconds: float = Field(default=1800, gt=0)
     write_private_transcripts: bool = True
+
+    @model_validator(mode="after")
+    def validate_routing_cohort_limits(self) -> RunConfig:
+        if bool(self.routing_cohort_size) != bool(self.routing_max_concurrency_per_cohort):
+            raise ValueError(
+                "routing_cohort_size and routing_max_concurrency_per_cohort must both be set or zero"
+            )
+        if self.routing_cohort_size and self.concurrency > (
+            self.routing_cohort_size * self.routing_max_concurrency_per_cohort
+        ):
+            raise ValueError("run concurrency exceeds the configured routing cohort capacity")
+        return self
 
 
 class DatasetConfig(StrictConfigModel):

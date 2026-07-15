@@ -3,6 +3,8 @@ run:
   output_dir: runs
   seed: 20260715
   concurrency: 1
+  routing_cohort_size: 11
+  routing_max_concurrency_per_cohort: 4
   attempts: 1
   shuffle: false
   resume: true

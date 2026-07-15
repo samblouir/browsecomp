@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import json
 from pathlib import Path
@@ -180,6 +181,81 @@ async def test_engine_runs_a_locked_heldout_range(monkeypatch, tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_engine_enforces_per_cohort_concurrency(monkeypatch, tmp_path: Path) -> None:
+    import browsecomp250.run.engine as engine_module
+
+    cache_dir = tmp_path / "cache"
+    _write_synthetic_dataset(cache_dir / "browse_comp_test_set.csv")
+    repository_root = Path(__file__).parents[1]
+    current_by_shard = [0, 0]
+    maximum_by_shard = [0, 0]
+    current_total = 0
+    maximum_total = 0
+
+    class CohortTrackingRunner(_FakeAgentRunner):
+        async def run(self, question: str, **kwargs) -> AgentOutcome:
+            nonlocal current_total, maximum_total
+            namespace = str(kwargs["request_namespace"])
+            rank = int(namespace.split(":bc250-", 1)[1].split("-", 1)[0])
+            shard = rank % 2
+            current_by_shard[shard] += 1
+            current_total += 1
+            maximum_by_shard[shard] = max(maximum_by_shard[shard], current_by_shard[shard])
+            maximum_total = max(maximum_total, current_total)
+            try:
+                await asyncio.sleep(0.02)
+                return await super().run(question, **kwargs)
+            finally:
+                current_by_shard[shard] -= 1
+                current_total -= 1
+
+    config = AppConfig(
+        run=RunConfig(
+            name="fixture-cohort-run",
+            output_dir=tmp_path / "runs",
+            seed=0,
+            concurrency=2,
+            routing_cohort_size=2,
+            routing_max_concurrency_per_cohort=1,
+            shuffle=True,
+        ),
+        dataset=DatasetConfig(
+            source_url="https://example.test/encrypted.csv",
+            cache_dir=cache_dir,
+            subset_indices_path=repository_root / "data" / "subset_indices.json",
+        ),
+        model=ModelConfig(api_base="https://model.test/v1", api_key="key", model="star"),
+        search=SearchConfig(provider="searxng", cache_path=tmp_path / "search.sqlite3"),
+        browser=BrowserConfig(cache_path=tmp_path / "pages.sqlite3", block_private_networks=False),
+        agent=AgentConfig(),
+        grader=GraderConfig(mode="deterministic"),
+        report=ReportConfig(bootstrap_samples=200),
+    )
+
+    monkeypatch.setattr(engine_module, "AgentRunner", CohortTrackingRunner)
+    monkeypatch.setattr(engine_module, "OpenAICompatibleClient", _FakeClosable)
+    monkeypatch.setattr(engine_module, "create_search_provider", lambda config: _FakeClosable())
+    monkeypatch.setattr(engine_module, "PageFetcher", _FakeClosable)
+    monkeypatch.setattr(engine_module, "Grader", _FakeGrader)
+
+    summary = await BenchmarkEngine(config).run(limit=4)
+    assert summary["n_scored"] == 4
+    assert maximum_by_shard == [1, 1]
+    assert maximum_total == 2
+
+
+def test_run_config_rejects_incomplete_or_oversubscribed_cohort_limits() -> None:
+    with pytest.raises(ValueError, match="must both be set or zero"):
+        RunConfig(routing_cohort_size=11)
+    with pytest.raises(ValueError, match="exceeds the configured routing cohort capacity"):
+        RunConfig(
+            concurrency=45,
+            routing_cohort_size=11,
+            routing_max_concurrency_per_cohort=4,
+        )
+
+
+@pytest.mark.asyncio
 async def test_engine_fails_before_writing_lock_when_disk_space_is_too_low(
     monkeypatch,
     tmp_path: Path,
@@ -272,6 +348,4 @@ async def test_engine_rejects_placeholder_openrouter_search_key_before_lock(
 
     with pytest.raises(RuntimeError, match="openrouter_exa search API key is a placeholder"):
         await BenchmarkEngine(config).run(limit=1)
-    assert not (
-        tmp_path / "runs" / "fixture-placeholder-openrouter" / "run.lock.json"
-    ).exists()
+    assert not (tmp_path / "runs" / "fixture-placeholder-openrouter" / "run.lock.json").exists()

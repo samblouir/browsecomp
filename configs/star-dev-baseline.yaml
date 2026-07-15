@@ -3,6 +3,8 @@ run:
   output_dir: runs
   seed: 20260715
   concurrency: ${BC250_RUN_CONCURRENCY:-7}
+  routing_cohort_size: ${BC250_ROUTER_COHORT_SIZE:-11}
+  routing_max_concurrency_per_cohort: ${BC250_ROUTER_MAX_CONCURRENCY_PER_COHORT:-4}
   attempts: 1
   shuffle: false
   resume: true

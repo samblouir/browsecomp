@@ -718,6 +718,20 @@
           "title": "Concurrency",
           "type": "integer"
         },
+        "routing_cohort_size": {
+          "default": 0,
+          "maximum": 256,
+          "minimum": 0,
+          "title": "Routing Cohort Size",
+          "type": "integer"
+        },
+        "routing_max_concurrency_per_cohort": {
+          "default": 0,
+          "maximum": 128,
+          "minimum": 0,
+          "title": "Routing Max Concurrency Per Cohort",
+          "type": "integer"
+        },
         "attempts": {
           "default": 1,
           "maximum": 64,

@@ -106,6 +106,12 @@ benchmark rows deterministically across the fleet while every row's later tool
 turns remain on its original KV-cache home. Routers that do not recognize these
 headers simply ignore them.
 
+Star profiles pair this placement with an 11-shard scheduler and a four-chain
+semaphore per shard. The global concurrency may reach 44, but shuffled work
+cannot place a fifth active benchmark chain on any deterministic Star-7 shard.
+Both values are frozen in the run lock and can be overridden only for a
+different documented fleet topology.
+
 ## Agent protocols
 
 ### JSON-action protocol

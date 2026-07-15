@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import random
 import shutil
+from contextlib import AsyncExitStack
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -213,6 +214,10 @@ class BenchmarkEngine:
             external_model_broker = ExternalModelBroker(self.config.external_model)
         grader = Grader(self.config.grader)
         semaphore = asyncio.Semaphore(self.config.run.concurrency)
+        cohort_semaphores = [
+            asyncio.Semaphore(self.config.run.routing_max_concurrency_per_cohort)
+            for _ in range(self.config.run.routing_cohort_size)
+        ]
         failures: list[str] = []
         active_trials: dict[str, dict[str, Any]] = {}
         progress = {"completed": len(completed), "failed": 0}
@@ -230,7 +235,11 @@ class BenchmarkEngine:
             )
 
         async def execute(item: Any, attempt: int) -> None:
-            async with semaphore:
+            async with AsyncExitStack() as slots:
+                if cohort_semaphores:
+                    cohort_index = item.subset_rank % len(cohort_semaphores)
+                    await slots.enter_async_context(cohort_semaphores[cohort_index])
+                await slots.enter_async_context(semaphore)
                 trial_key = f"{item.item_id}/attempt-{attempt}"
 
                 def event_sink(event: dict[str, Any]) -> None:
