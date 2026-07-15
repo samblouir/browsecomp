@@ -98,6 +98,14 @@ src/browsecomp250/
 
 No model-produced string is executed as shell code. The model has only the enumerated browsing actions implemented in `AgentRunner`.
 
+Each model chain carries a stable `X-FRL-Conversation-Id`. When the request
+namespace identifies a frozen-subset row, the harness also derives one cohort
+ID from the immutable run name and uses the subset rank as
+`X-FRL-KV-Cohort-Index`. FrontierRL routers can therefore spread independent
+benchmark rows deterministically across the fleet while every row's later tool
+turns remain on its original KV-cache home. Routers that do not recognize these
+headers simply ignore them.
+
 ## Agent protocols
 
 ### JSON-action protocol

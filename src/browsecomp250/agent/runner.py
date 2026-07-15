@@ -35,6 +35,7 @@ _SEARCH_TOKEN = re.compile(r"[a-z0-9]+", flags=re.I)
 _STRATEGY_PLACEHOLDER_QUERY = re.compile(
     r"^(?:query|search)(?:\s+(?:query|search))?\s*\d+$", flags=re.I
 )
+_BENCHMARK_REQUEST_NAMESPACE = re.compile(r"^(?P<run>.+):bc250-(?P<rank>\d+)-row-\d+:attempt-\d+$")
 _LINK_STOPWORDS = frozenset(
     {
         "a",
@@ -175,10 +176,8 @@ class AgentRunner:
         previous_response_id: str | None = None
         chain_delta_messages: list[dict[str, Any]] | None = None
         namespace_material = request_namespace or question
-        chain_namespace = hashlib.sha256(namespace_material.encode("utf-8")).hexdigest()[:24]
-        request_headers = {
-            "X-FRL-Conversation-Id": f"bc250-{chain_namespace}",
-        }
+        request_headers = self._routing_headers(namespace_material)
+        chain_namespace = request_headers["X-FRL-Conversation-Id"].removeprefix("bc250-")
 
         initial_user = (
             "Question:\n"
@@ -204,6 +203,8 @@ class AgentRunner:
             protocol=protocol,
             response_chain=chain_enabled,
             routing_conversation_id=request_headers["X-FRL-Conversation-Id"],
+            routing_cohort_id=request_headers.get("X-FRL-KV-Cohort-Id"),
+            routing_cohort_index=request_headers.get("X-FRL-KV-Cohort-Index"),
         )
 
         for step in range(1, self.agent_config.max_steps + 1):
@@ -1304,6 +1305,23 @@ class AgentRunner:
             extra_body=extra_body,
             request_headers=request_headers,
         )
+
+    @staticmethod
+    def _routing_headers(namespace_material: str) -> dict[str, str]:
+        chain_namespace = hashlib.sha256(namespace_material.encode("utf-8")).hexdigest()[:24]
+        headers = {"X-FRL-Conversation-Id": f"bc250-{chain_namespace}"}
+        benchmark_namespace = _BENCHMARK_REQUEST_NAMESPACE.fullmatch(namespace_material)
+        if benchmark_namespace is None:
+            return headers
+        cohort_material = benchmark_namespace.group("run")
+        cohort_id = hashlib.sha256(cohort_material.encode("utf-8")).hexdigest()[:20]
+        headers.update(
+            {
+                "X-FRL-KV-Cohort-Id": f"bc250-{cohort_id}",
+                "X-FRL-KV-Cohort-Index": str(int(benchmark_namespace.group("rank"))),
+            }
+        )
+        return headers
 
     @staticmethod
     def _result_has_urls(result: dict[str, Any]) -> bool:

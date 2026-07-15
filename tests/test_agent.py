@@ -626,6 +626,19 @@ def test_result_has_urls_detects_batched_search_candidates() -> None:
     assert not AgentRunner._result_has_urls({"searches": [{"query": "q", "results": []}]})
 
 
+def test_benchmark_routing_headers_spread_rows_but_keep_each_chain_sticky() -> None:
+    namespace = "campaign-run:bc250-023-row-0151:attempt-1"
+    headers = AgentRunner._routing_headers(namespace)
+    assert headers == {
+        "X-FRL-Conversation-Id": ("bc250-" + hashlib.sha256(namespace.encode()).hexdigest()[:24]),
+        "X-FRL-KV-Cohort-Id": ("bc250-" + hashlib.sha256(b"campaign-run").hexdigest()[:20]),
+        "X-FRL-KV-Cohort-Index": "23",
+    }
+    assert AgentRunner._routing_headers("helper-namespace") == {
+        "X-FRL-Conversation-Id": ("bc250-" + hashlib.sha256(b"helper-namespace").hexdigest()[:24])
+    }
+
+
 @pytest.mark.asyncio
 async def test_agent_rejects_final_until_required_independent_search(tmp_path: Path) -> None:
     def tool_call(call_id: str, name: str, arguments: dict) -> ModelResponse:
