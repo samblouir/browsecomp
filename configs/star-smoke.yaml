@@ -76,6 +76,9 @@ browser:
   allow_nonstandard_ports: false
   cache_mode: readwrite
   cache_path: ~/.cache/browsecomp250/page-cache.sqlite3
+  reader_fallback_enabled: true
+  reader_fallback_base_url: https://r.jina.ai
+  reader_fallback_min_chars: 300
 
 agent:
   max_steps: 80
@@ -90,7 +93,11 @@ agent:
   enable_open_many: true
   max_batch_size: 7
   automatic_external_after_search_calls: 8
-  automatic_external_requests: 3
+  automatic_external_requests: 4
+  automatic_page_inspection_after_search_actions: 2
+  automatic_page_inspection_count: 4
+  automatic_page_inspection_max_chars: 10000
+  max_consecutive_duplicate_actions: 3
   system_prompt_path: prompts/star_browsecomp_system.md
 
 external_model:
@@ -116,13 +123,14 @@ grader:
   allow_empty_api_key: true
   model: "${BC250_GRADER_MODEL:-gpt-5.6}"
   extra_headers_json: '${BC250_GRADER_EXTRA_HEADERS:-{}}'
-  temperature: 0.3
+  temperature: null
   max_output_tokens: 16384
   timeout_seconds: 300
   max_retries: 4
   input_price_per_million: ${BC250_GRADER_INPUT_PRICE_PER_MILLION:-0}
   output_price_per_million: ${BC250_GRADER_OUTPUT_PRICE_PER_MILLION:-0}
-  extra_body: {}
+  extra_body:
+    max_completion_tokens: 16384
 
 report:
   confidence_level: 0.95

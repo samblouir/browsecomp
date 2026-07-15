@@ -23,6 +23,8 @@ from ..search.base import SearchError, SearchProvider
 from ..types import AgentAction, AgentOutcome, PageDocument, Usage
 from ..util import canonical_json, truncate_middle
 
+_PUBLIC_URL = re.compile(r"https?://[^\s<>()\[\]{}\"'`]+", flags=re.I)
+
 
 class AgentRunner:
     def __init__(
@@ -80,7 +82,9 @@ class AgentRunner:
         require_open = False
         search_streak = 0
         automatic_external_attempted = False
-        action_fingerprints: set[str] = set()
+        last_action_fingerprint: str | None = None
+        consecutive_duplicate_actions = 0
+        last_successful_search_result: dict[str, Any] | None = None
         chain_enabled = self.model_config.response_chain
         previous_response_id: str | None = None
         chain_delta_messages: list[dict[str, Any]] | None = None
@@ -278,8 +282,12 @@ class AgentRunner:
             action_fingerprint = canonical_json(
                 {"action": action.action, "payload": action.payload}
             )
-            duplicate_action = action_fingerprint in action_fingerprints
-            action_fingerprints.add(action_fingerprint)
+            duplicate_action = action_fingerprint == last_action_fingerprint
+            if duplicate_action:
+                consecutive_duplicate_actions += 1
+            else:
+                last_action_fingerprint = action_fingerprint
+                consecutive_duplicate_actions = 0
             budget_violation = self._action_budget_violation(
                 action,
                 search_calls=search_calls,
@@ -288,22 +296,150 @@ class AgentRunner:
                 retrieved_chars=retrieved_chars,
                 external_model_calls=external_model_calls,
             )
+            automatic_page_inspection_succeeded = False
             try:
                 if duplicate_action:
-                    raise RuntimeError(
-                        "Identical action already executed; inspect existing evidence or choose a "
-                        "materially different action"
+                    remaining_page_budget = max(
+                        0,
+                        self.agent_config.max_page_opens - page_opens,
                     )
-                if budget_violation:
+                    recovery_urls = self._unopened_candidate_urls(
+                        last_successful_search_result or {},
+                        opened=opened,
+                        limit=min(
+                            self.agent_config.automatic_page_inspection_count,
+                            remaining_page_budget,
+                        ),
+                    )
+                    if (
+                        action.action in {"search", "search_many"}
+                        and recovery_urls
+                        and consecutive_duplicate_actions
+                        < self.agent_config.max_consecutive_duplicate_actions
+                    ):
+                        self._emit(
+                            "duplicate_action_recovery_started",
+                            step=step,
+                            action=action.action,
+                            duplicate_count=consecutive_duplicate_actions,
+                            url_count=len(recovery_urls),
+                        )
+                        page_result, page_deltas = await self._execute_action(
+                            AgentAction(
+                                action="open_many",
+                                payload={
+                                    "urls": recovery_urls,
+                                    "max_chars": (
+                                        self.agent_config.automatic_page_inspection_max_chars
+                                    ),
+                                },
+                            ),
+                            opened,
+                            notes,
+                            request_namespace=chain_namespace,
+                        )
+                        for page in page_result.get("pages") or []:
+                            if isinstance(page, dict) and isinstance(page.get("links"), list):
+                                page["links"] = page["links"][:20]
+                        result = {
+                            "ok": bool(page_result.get("ok")),
+                            "repeated_action": True,
+                            "duplicate_count": consecutive_duplicate_actions,
+                            "controller_recovery": (
+                                "The repeated search was not reissued. Fresh candidate pages "
+                                "from the prior discovery batch were inspected instead."
+                            ),
+                            "automatic_page_inspection": page_result,
+                            "next_action_guidance": (
+                                "Use this page evidence to refine the answer. Do not repeat the "
+                                "same search action."
+                            ),
+                        }
+                        deltas = page_deltas
+                        automatic_page_inspection_succeeded = bool(page_result.get("ok"))
+                        self._emit(
+                            "duplicate_action_recovery_completed",
+                            step=step,
+                            action=action.action,
+                            duplicate_count=consecutive_duplicate_actions,
+                            succeeded=int(page_result.get("succeeded") or 0),
+                            failed=int(page_result.get("failed") or 0),
+                        )
+                    else:
+                        if (
+                            consecutive_duplicate_actions
+                            >= self.agent_config.max_consecutive_duplicate_actions
+                        ):
+                            force_final = True
+                        raise RuntimeError(
+                            "Identical action already executed "
+                            f"{consecutive_duplicate_actions} consecutive time(s). "
+                            "Use existing evidence and return the final answer now."
+                        )
+                elif budget_violation:
                     force_final = True
                     raise RuntimeError(budget_violation)
-                result, deltas = await self._execute_action(
-                    action,
-                    opened,
-                    notes,
-                    request_namespace=chain_namespace,
-                )
+                else:
+                    result, deltas = await self._execute_action(
+                        action,
+                        opened,
+                        notes,
+                        request_namespace=chain_namespace,
+                    )
+                    if action.action in {"search", "search_many"} and result.get("ok"):
+                        last_successful_search_result = result
                 projected_search_calls = search_calls + deltas[0]
+                if self._should_automatically_inspect_pages(
+                    action=action,
+                    action_result=result,
+                    search_streak=search_streak,
+                ):
+                    remaining_page_budget = max(
+                        0,
+                        self.agent_config.max_page_opens - page_opens,
+                    )
+                    candidate_urls = self._candidate_urls(
+                        result,
+                        min(
+                            self.agent_config.automatic_page_inspection_count,
+                            remaining_page_budget,
+                        ),
+                    )
+                    if candidate_urls:
+                        self._emit(
+                            "automatic_page_inspection_started",
+                            step=step,
+                            url_count=len(candidate_urls),
+                        )
+                        page_result, page_deltas = await self._execute_action(
+                            AgentAction(
+                                action="open_many",
+                                payload={
+                                    "urls": candidate_urls,
+                                    "max_chars": (
+                                        self.agent_config.automatic_page_inspection_max_chars
+                                    ),
+                                },
+                            ),
+                            opened,
+                            notes,
+                            request_namespace=chain_namespace,
+                        )
+                        for page in page_result.get("pages") or []:
+                            if isinstance(page, dict) and isinstance(page.get("links"), list):
+                                page["links"] = page["links"][:20]
+                        result["automatic_page_inspection"] = page_result
+                        deltas = tuple(
+                            left + right for left, right in zip(deltas, page_deltas, strict=True)
+                        )
+                        automatic_page_inspection_succeeded = bool(page_result.get("ok"))
+                        self._emit(
+                            "automatic_page_inspection_completed",
+                            step=step,
+                            succeeded=int(page_result.get("succeeded") or 0),
+                            failed=int(page_result.get("failed") or 0),
+                            retrieved_chars=page_deltas[3],
+                        )
                 if self._should_automatically_consult_external(
                     action=action,
                     action_result=result,
@@ -322,14 +458,28 @@ class AgentRunner:
                         request_count=request_count,
                         search_calls=projected_search_calls,
                     )
-                    try:
-                        consultations = await self._automatic_external_consultations(
+                    consultation_task = asyncio.create_task(
+                        self._automatic_external_consultations(
                             question=question,
                             current_evidence=result,
                             notes=notes,
                             request_namespace=chain_namespace,
                             request_count=request_count,
                         )
+                    )
+                    consultation_started = time.perf_counter()
+                    try:
+                        while True:
+                            done, _ = await asyncio.wait({consultation_task}, timeout=15)
+                            if consultation_task in done:
+                                consultations = consultation_task.result()
+                                break
+                            self._emit(
+                                "automatic_external_wait",
+                                step=step,
+                                elapsed_seconds=time.perf_counter() - consultation_started,
+                                request_count=request_count,
+                            )
                     except Exception as exc:  # noqa: BLE001 - search evidence remains usable
                         consultations = [
                             {
@@ -339,6 +489,11 @@ class AgentRunner:
                             }
                         ]
                         errors.append(f"Step {step} automatic external consultation error: {exc}")
+                    except BaseException:
+                        consultation_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await consultation_task
+                        raise
                     external_model_calls += request_count
                     consultation_chars = sum(
                         len(str(item.get("content") or "")) for item in consultations
@@ -352,6 +507,62 @@ class AgentRunner:
                             "reviews as leads. Verify material claims against public-web evidence."
                         ),
                     }
+                    remaining_page_budget = max(
+                        0,
+                        self.agent_config.max_page_opens - page_opens - deltas[1],
+                    )
+                    external_urls = self._external_consultation_urls(
+                        consultations,
+                        opened=opened,
+                        limit=min(
+                            self.agent_config.automatic_page_inspection_count,
+                            remaining_page_budget,
+                        ),
+                    )
+                    if external_urls:
+                        self._emit(
+                            "external_source_inspection_started",
+                            step=step,
+                            url_count=len(external_urls),
+                        )
+                        external_pages, external_page_deltas = await self._execute_action(
+                            AgentAction(
+                                action="open_many",
+                                payload={
+                                    "urls": external_urls,
+                                    "max_chars": (
+                                        self.agent_config.automatic_page_inspection_max_chars
+                                    ),
+                                },
+                            ),
+                            opened,
+                            notes,
+                            request_namespace=chain_namespace,
+                        )
+                        for page in external_pages.get("pages") or []:
+                            if isinstance(page, dict) and isinstance(page.get("links"), list):
+                                page["links"] = page["links"][:20]
+                        result["independent_external_consultation"]["source_page_inspection"] = (
+                            external_pages
+                        )
+                        deltas = tuple(
+                            left + right
+                            for left, right in zip(
+                                deltas,
+                                external_page_deltas,
+                                strict=True,
+                            )
+                        )
+                        automatic_page_inspection_succeeded = (
+                            automatic_page_inspection_succeeded or bool(external_pages.get("ok"))
+                        )
+                        self._emit(
+                            "external_source_inspection_completed",
+                            step=step,
+                            succeeded=int(external_pages.get("succeeded") or 0),
+                            failed=int(external_pages.get("failed") or 0),
+                            retrieved_chars=external_page_deltas[3],
+                        )
                     self._emit(
                         "automatic_external_completed",
                         step=step,
@@ -384,7 +595,15 @@ class AgentRunner:
 
             if action.action in {"search", "search_many"}:
                 if result.get("ok"):
-                    search_streak += 1
+                    if automatic_page_inspection_succeeded:
+                        search_streak = 0
+                        require_open = False
+                        result["next_action_guidance"] = (
+                            "Inspect the attached page evidence before deciding whether more "
+                            "discovery is necessary."
+                        )
+                    else:
+                        search_streak += 1
                     if search_streak >= 2 and self._result_has_urls(result):
                         require_open = True
                         result["next_action_requirement"] = (
@@ -491,7 +710,6 @@ class AgentRunner:
                 )
             )
             if force_final:
-                tools = [tool for tool in tools if tool.get("function", {}).get("name") == "final"]
                 tool_choice = {"type": "function", "function": {"name": "final"}}
             elif require_open:
                 # Keep the caller-owned tool schema stable across response-chain
@@ -604,6 +822,83 @@ class AgentRunner:
             and external_model_calls < self.external_model_config.max_calls_per_task
         )
 
+    def _should_automatically_inspect_pages(
+        self,
+        *,
+        action: AgentAction,
+        action_result: dict[str, Any],
+        search_streak: int,
+    ) -> bool:
+        threshold = self.agent_config.automatic_page_inspection_after_search_actions
+        return bool(
+            threshold > 0
+            and action.action in {"search", "search_many"}
+            and action_result.get("ok")
+            and self._result_has_urls(action_result)
+            and search_streak + 1 >= threshold
+        )
+
+    @staticmethod
+    def _candidate_urls(result: dict[str, Any], limit: int) -> list[str]:
+        if limit <= 0:
+            return []
+        batches: list[list[dict[str, Any]]] = []
+        if isinstance(result.get("results"), list):
+            batches.append([row for row in result["results"] if isinstance(row, dict)])
+        for search in result.get("searches") or []:
+            if isinstance(search, dict) and isinstance(search.get("results"), list):
+                batches.append([row for row in search["results"] if isinstance(row, dict)])
+        urls: list[str] = []
+        seen: set[str] = set()
+        for rank in range(max((len(batch) for batch in batches), default=0)):
+            for batch in batches:
+                if rank >= len(batch):
+                    continue
+                url = str(batch[rank].get("url") or "").strip()
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                urls.append(url)
+                if len(urls) >= limit:
+                    return urls
+        return urls
+
+    @classmethod
+    def _unopened_candidate_urls(
+        cls,
+        result: dict[str, Any],
+        *,
+        opened: dict[str, PageDocument],
+        limit: int,
+    ) -> list[str]:
+        if limit <= 0:
+            return []
+        opened_urls = set(opened)
+        candidates = cls._candidate_urls(result, 10_000)
+        return [url for url in candidates if url not in opened_urls][:limit]
+
+    @staticmethod
+    def _external_consultation_urls(
+        consultations: list[dict[str, Any]],
+        *,
+        opened: dict[str, PageDocument],
+        limit: int,
+    ) -> list[str]:
+        if limit <= 0:
+            return []
+        urls: list[str] = []
+        seen = set(opened)
+        for consultation in consultations:
+            for match in _PUBLIC_URL.finditer(str(consultation.get("content") or "")):
+                url = match.group(0).rstrip(".,;:")
+                if url in seen:
+                    continue
+                seen.add(url)
+                urls.append(url)
+                if len(urls) >= limit:
+                    return urls
+        return urls
+
     async def _automatic_external_consultations(
         self,
         *,
@@ -652,7 +947,10 @@ class AgentRunner:
                 "system": (
                     "You are an independent research subagent. Do not look for benchmark dumps, "
                     "reference answers, canaries, or leaked evaluation material. Work only from "
-                    "the supplied question, evidence, and ordinary public knowledge."
+                    "the supplied question, evidence, and ordinary public knowledge. Use public "
+                    "web research if it is available to you. Clearly label memory-based leads as "
+                    "unverified, do not fabricate URLs, and never claim high confidence without "
+                    "direct constraint-matching evidence."
                 ),
                 "query": f"Role: {role}\n\n{task}",
                 "context": context,

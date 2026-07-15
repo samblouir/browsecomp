@@ -59,12 +59,21 @@ The model cannot execute shell commands, arbitrary Python, code interpreters, fi
 | Batch size | 7 |
 | Per-task wall-clock timeout | 1,800 seconds |
 
-After eight logical searches, the Star profiles attach three concurrent
+After eight logical searches, the Star profiles attach four concurrent
 external reviews to the current search result when the model has not already
 requested external help. These are candidate-generation, adversarial-audit,
-and search-strategy reviews. They are not treated as ground truth, do not have
+search-strategy, and independent final-review roles. The controller opens public
+source URLs from those reviews and also inspects up to four top result pages
+after each two-search phase. They are not treated as ground truth, do not have
 access to private benchmark artifacts, and must be verified with web evidence.
 This scaffold is part of the reported evaluation protocol.
+
+If Star immediately repeats an identical search action, the controller does
+not spend the search budget on a redundant request. It opens fresh, previously
+uninspected URLs from the latest successful result batch. After three
+consecutive identical actions it requires the final tool while retaining the
+same complete tool schema, preventing deterministic retry loops without
+changing the model-visible capabilities mid-chain.
 
 `headline` enforces lower bounds rather than exact values to permit endpoint-specific output settings, but comparable campaigns should use identical values.
 
@@ -125,6 +134,11 @@ Headline runs use the BrowseComp reference semantic-grader prompt. Fix:
 - custom request fields;
 - evaluation date; and
 - parser version.
+
+The current Star profiles use `gpt-5.6` with
+`max_completion_tokens: 16384`. They omit the grader `temperature` field
+because the live endpoint accepts only its server default of `1`; this is
+separate from the evaluated Star model, which runs at temperature `0.3`.
 
 A missing or malformed `correct: yes|no` field defaults to incorrect.
 

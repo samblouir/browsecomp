@@ -137,7 +137,12 @@ class OpenAICompatibleClient:
                 await asyncio.sleep(delay)
             except (ValueError, KeyError, IndexError, TypeError) as exc:
                 raise ModelAPIError(f"Malformed chat completion response: {exc}") from exc
-        raise ModelAPIError(f"Chat completion failed after retries: {last_error}")
+        detail = ""
+        if isinstance(last_error, httpx.HTTPStatusError):
+            response_text = last_error.response.text.strip()
+            if response_text:
+                detail = f"; response={response_text[:2000]}"
+        raise ModelAPIError(f"Chat completion failed after retries: {last_error}{detail}")
 
     def _parse_response(self, data: dict[str, Any], latency: float) -> ModelResponse:
         choices = data.get("choices")

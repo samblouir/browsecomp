@@ -124,6 +124,19 @@ HTML extraction removes scripts, styles, frames, canvases, templates, and SVG, t
 
 PDF extraction uses text extraction only. Scanned image-only PDFs are not OCRed.
 
+### Public reader fallback
+
+The Star profiles enable a public text-reader fallback for public pages that
+fail direct retrieval or yield fewer than 300 extracted characters. The
+original URL is validated by the same private-network policy before any reader
+request. If an HTTPS origin is unavailable but the validated origin is
+HTTP-only, the fallback may retry that same host over HTTP.
+
+The returned document keeps the original or resolved origin as its citation
+URL. The reader URL is transport metadata, never source identity. Reader mode,
+base URL, and minimum-character threshold are included in the page-cache key
+and must be frozen for comparisons.
+
 ## Playwright browser
 
 Install:

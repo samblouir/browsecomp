@@ -12,7 +12,7 @@ from browsecomp250.config import (
     ModelConfig,
     SearchConfig,
 )
-from browsecomp250.types import AgentAction, ModelResponse, SearchResult, Usage
+from browsecomp250.types import AgentAction, ModelResponse, PageDocument, SearchResult, Usage
 
 
 class FakeModel:
@@ -96,6 +96,26 @@ class AutomaticExternalModel:
         return None
 
 
+class DuplicateSearchModel:
+    def __init__(self):
+        self.responses = iter(
+            [
+                ModelResponse(content='{"action":"search","query":"same clue"}'),
+                ModelResponse(content='{"action":"search","query":"same clue"}'),
+                ModelResponse(
+                    content='{"action":"final","explanation":"page checked","exact_answer":"Answer","confidence":85,"citations":["https://example.test"]}'
+                ),
+            ]
+        )
+
+    async def chat(self, messages, **kwargs):
+        del messages, kwargs
+        return next(self.responses)
+
+    async def close(self):
+        return None
+
+
 class FakeSearch:
     def __init__(self, tmp_path: Path):
         self.config = SearchConfig(provider="searxng", cache_path=tmp_path / "s.sqlite3")
@@ -107,6 +127,18 @@ class FakeSearch:
 class FakeBrowser:
     async def fetch(self, url):
         raise AssertionError("not expected")
+
+
+class SuccessfulBrowser:
+    async def fetch(self, url):
+        return PageDocument(
+            requested_url=url,
+            final_url=url,
+            title="Evidence",
+            text="verified page evidence",
+            content_type="text/plain",
+            status_code=200,
+        )
 
 
 class FakeExternalModelBroker:
@@ -202,7 +234,15 @@ async def test_agent_forces_final_tool_choice_on_last_step(tmp_path: Path) -> No
         "type": "function",
         "function": {"name": "final"},
     }
-    assert [tool["function"]["name"] for tool in model.kwargs["tools"]] == ["final"]
+    assert {tool["function"]["name"] for tool in model.kwargs["tools"]} == {
+        "search",
+        "search_many",
+        "open",
+        "open_many",
+        "find",
+        "note",
+        "final",
+    }
 
 
 @pytest.mark.asyncio
@@ -233,6 +273,79 @@ def test_result_has_urls_detects_batched_search_candidates() -> None:
         {"searches": [{"query": "q", "results": [{"url": "https://example.test"}]}]}
     )
     assert not AgentRunner._result_has_urls({"searches": [{"query": "q", "results": []}]})
+
+
+def test_candidate_urls_are_selected_round_robin() -> None:
+    result = {
+        "searches": [
+            {
+                "results": [
+                    {"url": "https://a.test/1"},
+                    {"url": "https://a.test/2"},
+                ]
+            },
+            {
+                "results": [
+                    {"url": "https://b.test/1"},
+                    {"url": "https://a.test/1"},
+                ]
+            },
+        ]
+    }
+    assert AgentRunner._candidate_urls(result, 3) == [
+        "https://a.test/1",
+        "https://b.test/1",
+        "https://a.test/2",
+    ]
+
+
+def test_unopened_candidate_urls_skip_prior_pages() -> None:
+    result = {
+        "results": [
+            {"url": "https://already.test/page"},
+            {"url": "https://new.test/one"},
+            {"url": "https://new.test/two"},
+        ]
+    }
+    opened = {
+        "https://already.test/page": PageDocument(
+            requested_url="https://already.test/page",
+            final_url="https://already.test/page",
+            title="",
+            text="",
+            content_type="text/plain",
+            status_code=200,
+        )
+    }
+    assert AgentRunner._unopened_candidate_urls(result, opened=opened, limit=1) == [
+        "https://new.test/one"
+    ]
+
+
+def test_external_consultation_urls_skip_opened_and_deduplicate() -> None:
+    opened = {
+        "https://already.test/page": PageDocument(
+            requested_url="https://already.test/page",
+            final_url="https://already.test/page",
+            title="",
+            text="",
+            content_type="text/plain",
+            status_code=200,
+        )
+    }
+    consultations = [
+        {
+            "content": (
+                "See https://already.test/page and https://source.test/a. "
+                "Cross-check https://source.test/a and http://source.test/b."
+            )
+        }
+    ]
+    assert AgentRunner._external_consultation_urls(
+        consultations,
+        opened=opened,
+        limit=3,
+    ) == ["https://source.test/a", "http://source.test/b"]
 
 
 def test_forced_final_recovers_agent_backend_plain_content() -> None:
@@ -373,6 +486,65 @@ def test_external_help_budget_does_not_force_final(tmp_path: Path) -> None:
         external_model_config=ExternalModelConfig(enabled=True, max_calls_per_task=8),
     )
     assert runner._near_budget(0, 0, 0, 0, 8) is False
+
+
+@pytest.mark.asyncio
+async def test_agent_automatically_inspects_pages_after_search_phase(tmp_path: Path) -> None:
+    runner = AgentRunner(
+        ModelConfig(api_base="http://model.test/v1", api_key="k", model="m"),
+        AgentConfig(
+            max_steps=4,
+            max_search_calls=4,
+            automatic_page_inspection_after_search_actions=2,
+            automatic_page_inspection_count=2,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        SuccessfulBrowser(),
+        model_client=AutomaticExternalModel(),
+    )
+    outcome = await runner.run("Question", request_namespace="run:item:auto-open")
+    assert outcome.status == "completed"
+    assert outcome.page_opens == 1
+    tool_results = [
+        row["content"]
+        for row in outcome.transcript
+        if row.get("role") == "user" and row.get("content", "").startswith("Tool result:")
+    ]
+    assert any("automatic_page_inspection" in row for row in tool_results)
+
+
+@pytest.mark.asyncio
+async def test_repeated_search_opens_fresh_evidence_instead_of_looping(tmp_path: Path) -> None:
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=4,
+            max_search_calls=4,
+            automatic_page_inspection_after_search_actions=0,
+            max_consecutive_duplicate_actions=3,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        SuccessfulBrowser(),
+        model_client=DuplicateSearchModel(),
+    )
+    outcome = await runner.run("Question", request_namespace="run:item:duplicate")
+    assert outcome.status == "completed"
+    assert outcome.search_calls == 1
+    assert outcome.page_opens == 1
+    tool_results = [
+        row["content"]
+        for row in outcome.transcript
+        if row.get("role") == "user" and row.get("content", "").startswith("Tool result:")
+    ]
+    assert any("controller_recovery" in row for row in tool_results)
 
 
 @pytest.mark.asyncio

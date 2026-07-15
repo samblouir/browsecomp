@@ -92,3 +92,48 @@ async def test_read_only_page_cache_fails_closed(tmp_path: Path) -> None:
         await fetcher.fetch("https://example.test/")
     assert called is False
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reader_fallback_preserves_original_public_url(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.host == "blocked.test":
+            raise httpx.ConnectError("origin unavailable", request=request)
+        assert request.url.host == "r.jina.ai"
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/plain"},
+            text=(
+                "Title: Recovered page\n\n"
+                "URL Source: https://blocked.test/fact\n\n"
+                "Markdown Content:\nAuthoritative fact. "
+                "[Source](https://source.test/record)"
+            ),
+            request=request,
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    fetcher = PageFetcher(
+        BrowserConfig(
+            block_private_networks=False,
+            cache_mode="off",
+            cache_path=tmp_path / "pages.sqlite3",
+            reader_fallback_enabled=True,
+        ),
+        client,
+    )
+    doc = await fetcher.fetch("https://blocked.test/fact")
+    assert seen == [
+        "https://blocked.test/fact",
+        "https://r.jina.ai/https://blocked.test/fact",
+    ]
+    assert doc.requested_url == "https://blocked.test/fact"
+    assert doc.final_url == "https://blocked.test/fact"
+    assert doc.title == "Recovered page"
+    assert "Authoritative fact" in doc.text
+    assert doc.content_type == "text/markdown; source=reader-fallback"
+    assert doc.links == [{"text": "Source", "url": "https://source.test/record"}]
+    await client.aclose()

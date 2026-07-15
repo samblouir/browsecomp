@@ -183,6 +183,9 @@ class BrowserConfig(StrictConfigModel):
     allow_nonstandard_ports: bool = False
     cache_mode: Literal["off", "read", "write", "readwrite", "refresh"] = "readwrite"
     cache_path: Path = Path("~/.cache/browsecomp250/page-cache.sqlite3")
+    reader_fallback_enabled: bool = False
+    reader_fallback_base_url: str = "https://r.jina.ai"
+    reader_fallback_min_chars: int = Field(default=300, ge=0, le=10000)
 
 
 class AgentConfig(StrictConfigModel):
@@ -199,6 +202,10 @@ class AgentConfig(StrictConfigModel):
     max_batch_size: int = Field(default=5, ge=1, le=20)
     automatic_external_after_search_calls: int = Field(default=0, ge=0)
     automatic_external_requests: int = Field(default=3, ge=1, le=4)
+    automatic_page_inspection_after_search_actions: int = Field(default=0, ge=0, le=20)
+    automatic_page_inspection_count: int = Field(default=4, ge=1, le=20)
+    automatic_page_inspection_max_chars: int = Field(default=10000, ge=1000, le=30000)
+    max_consecutive_duplicate_actions: int = Field(default=3, ge=1, le=10)
     system_prompt_path: Path | None = None
 
 

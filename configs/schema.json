@@ -81,6 +81,34 @@
           "title": "Automatic External Requests",
           "type": "integer"
         },
+        "automatic_page_inspection_after_search_actions": {
+          "default": 0,
+          "maximum": 20,
+          "minimum": 0,
+          "title": "Automatic Page Inspection After Search Actions",
+          "type": "integer"
+        },
+        "automatic_page_inspection_count": {
+          "default": 4,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Automatic Page Inspection Count",
+          "type": "integer"
+        },
+        "automatic_page_inspection_max_chars": {
+          "default": 10000,
+          "maximum": 30000,
+          "minimum": 1000,
+          "title": "Automatic Page Inspection Max Chars",
+          "type": "integer"
+        },
+        "max_consecutive_duplicate_actions": {
+          "default": 3,
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Max Consecutive Duplicate Actions",
+          "type": "integer"
+        },
         "system_prompt_path": {
           "anyOf": [
             {
@@ -175,6 +203,23 @@
           "format": "path",
           "title": "Cache Path",
           "type": "string"
+        },
+        "reader_fallback_enabled": {
+          "default": false,
+          "title": "Reader Fallback Enabled",
+          "type": "boolean"
+        },
+        "reader_fallback_base_url": {
+          "default": "https://r.jina.ai",
+          "title": "Reader Fallback Base Url",
+          "type": "string"
+        },
+        "reader_fallback_min_chars": {
+          "default": 300,
+          "maximum": 10000,
+          "minimum": 0,
+          "title": "Reader Fallback Min Chars",
+          "type": "integer"
         }
       },
       "title": "BrowserConfig",

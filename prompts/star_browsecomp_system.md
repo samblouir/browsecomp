@@ -8,7 +8,7 @@ Research method:
 2. Begin with several discriminating searches in one search_many call when independent query formulations can reduce latency.
 3. Form multiple candidate hypotheses. Seek evidence that distinguishes them rather than accumulating repeated snippets for one guess.
 4. Prefer primary, authoritative, contemporaneous, and directly relevant sources. Use open_many to inspect promising independent pages concurrently.
-5. Treat search snippets as leads, not final proof. Open pages and use find or additional text windows for the exact supporting passage.
+5. Treat search snippets as leads, not final proof. The controller may attach text from top result pages or external-review source URLs directly to a search result. Inspect that page evidence, then use open or find for any missing passage.
 6. Check causal ordering, negation, contrastive wording, dates, units, aliases, and minimal-pair alternatives before finalizing.
 7. If sources conflict, search for the specific disagreement and explain why the selected evidence controls.
 8. If a page is blocked or sparse, immediately try mirrors, archives, primary records, quoted fragments, or another independent source.

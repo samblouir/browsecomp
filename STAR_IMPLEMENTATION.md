@@ -33,14 +33,20 @@ Both `configs/star-smoke.yaml` and `configs/star-headline.yaml` enforce:
 - parallel `search_many` and `open_many` actions;
 - reproducible Brave API search with batched query fanout;
 - selective `ask_external_model` calls, including four-call concurrent batches;
-- three concurrent independent reviews automatically attached after eight
+- four concurrent independent reviews automatically attached after eight
   logical searches so difficult tasks cannot silently skip external help;
+- automatic inspection of up to four top result pages after each two-search
+  phase, with a safe reader fallback for blocked public origins;
+- bounded duplicate-action recovery that opens fresh discovered pages before
+  requiring a final answer with an unchanged tool schema;
 - bounded wall time and action budgets; and
 - durable per-step heartbeat and event logs.
 
-The semantic grader profile also has temperature `0.3` and a 16,384-token
-ceiling. This differs from the archive's stock zero-temperature headline
-profile and must be disclosed when publishing or comparing scores.
+The semantic grader uses `gpt-5.6` with `max_completion_tokens: 16384` and
+omits `temperature` because that endpoint rejects every explicit value except
+its server default of `1`. The evaluated Star model remains at temperature
+`0.3`. This grader transport detail must be disclosed when publishing or
+comparing scores.
 
 ## Search isolation
 
@@ -76,13 +82,23 @@ The admin token is optional for an explicitly enabled loopback broker and is
 redacted from public run locks when supplied.
 
 The Star profiles also set `automatic_external_after_search_calls: 8` and
-`automatic_external_requests: 3`. Once per item, the controller runs an
+`automatic_external_requests: 4`. Once per item, the controller runs an
 independent candidate investigator, adversarial constraint auditor, and search
-strategy specialist concurrently. Their outputs are embedded in the current
-search tool result, preserving the same assistant/tool continuation and stable
-response-chain history. A broker failure does not discard the successful search
-evidence. Exhausting the external-help budget does not force the main agent to
-finalize while browsing budget remains.
+strategy specialist plus an independent final-answer reviewer concurrently.
+Their outputs are embedded in the current search tool result, preserving the
+same assistant/tool continuation and stable response-chain history. Public URLs
+proposed by those reviews are opened automatically and attached for factual
+checking. A broker failure does not discard the successful search evidence.
+Exhausting the external-help budget does not force the main agent to finalize
+while browsing budget remains.
+
+After every two consecutive successful search actions, the controller opens up
+to four top URLs in round-robin query order. Failed or sparse direct HTTP
+retrieval falls back to the configured public text reader after validating the
+original URL against the same SSRF policy. The original or actually resolved
+source URL remains the citation identity; the reader URL is never presented as
+the source. This supplies page evidence without changing the model-visible tool
+schema or creating a synthetic conversation turn.
 
 ## Commands
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from contextlib import suppress
 from dataclasses import asdict
 from typing import Any
@@ -16,6 +17,9 @@ from .safety import UnsafeURLError, assert_safe_url
 
 class BrowserError(RuntimeError):
     pass
+
+
+_MARKDOWN_LINK = re.compile(r"\[([^\]]{1,300})\]\((https?://[^)\s]+)\)")
 
 
 class PageFetcher:
@@ -41,6 +45,9 @@ class PageFetcher:
             "max_response_bytes": self.config.max_response_bytes,
             "max_links_per_page": self.config.max_links_per_page,
             "user_agent": self.config.user_agent,
+            "reader_fallback_enabled": self.config.reader_fallback_enabled,
+            "reader_fallback_base_url": self.config.reader_fallback_base_url,
+            "reader_fallback_min_chars": self.config.reader_fallback_min_chars,
         }
 
     async def fetch(self, url: str) -> PageDocument:
@@ -55,16 +62,98 @@ class PageFetcher:
         if self.config.backend == "playwright":
             document = await self._fetch_playwright(url)
         elif self.config.backend == "auto":
-            document = await self._fetch_direct(url)
+            document = await self._fetch_direct_or_reader(url)
             if len(document.text) < 300 and "html" in document.content_type.lower():
                 with suppress(BrowserError):
                     document = await self._fetch_playwright(url)
         else:
-            document = await self._fetch_direct(url)
+            document = await self._fetch_direct_or_reader(url)
 
         if self.config.cache_mode in {"write", "readwrite", "refresh"}:
             self.cache.put(request, asdict(document))
         return document
+
+    async def _fetch_direct_or_reader(self, url: str) -> PageDocument:
+        try:
+            direct = await self._fetch_direct(url)
+        except BrowserError as direct_error:
+            if not self.config.reader_fallback_enabled:
+                raise
+            try:
+                return await self._fetch_reader(url)
+            except BrowserError as reader_error:
+                raise BrowserError(
+                    f"Direct fetch failed ({direct_error}); reader fallback failed ({reader_error})"
+                ) from reader_error
+
+        if (
+            self.config.reader_fallback_enabled
+            and len(direct.text) < self.config.reader_fallback_min_chars
+        ):
+            with suppress(BrowserError):
+                reader = await self._fetch_reader(url)
+                if len(reader.text) > len(direct.text):
+                    return reader
+        return direct
+
+    async def _fetch_reader(self, url: str) -> PageDocument:
+        try:
+            await assert_safe_url(
+                url,
+                block_private_networks=self.config.block_private_networks,
+                allow_nonstandard_ports=self.config.allow_nonstandard_ports,
+            )
+        except UnsafeURLError as exc:
+            raise BrowserError(str(exc)) from exc
+
+        parsed = urlsplit(url)
+        source_url = parsed._replace(fragment="").geturl()
+        candidates = [source_url]
+        if parsed.scheme == "https":
+            candidates.append(parsed._replace(scheme="http", fragment="").geturl())
+        proxy: PageDocument | None = None
+        resolved_source_url = source_url
+        errors: list[str] = []
+        for candidate in candidates:
+            try:
+                await assert_safe_url(
+                    candidate,
+                    block_private_networks=self.config.block_private_networks,
+                    allow_nonstandard_ports=self.config.allow_nonstandard_ports,
+                )
+                reader_url = self.config.reader_fallback_base_url.rstrip("/") + "/" + candidate
+                proxy = await self._fetch_direct(reader_url)
+                resolved_source_url = candidate
+                break
+            except (BrowserError, UnsafeURLError) as exc:
+                errors.append(f"{candidate}: {exc}")
+        if proxy is None:
+            raise BrowserError(
+                "Reader could not fetch any validated source variant: " + "; ".join(errors)
+            )
+        links: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for match in _MARKDOWN_LINK.finditer(proxy.text):
+            target = match.group(2).rstrip(".,;:")
+            if target in seen:
+                continue
+            seen.add(target)
+            links.append({"text": match.group(1), "url": target})
+            if len(links) >= self.config.max_links_per_page:
+                break
+        title_match = re.search(r"^Title:\s*(.+)$", proxy.text, flags=re.M)
+        return PageDocument(
+            requested_url=url,
+            final_url=resolved_source_url,
+            title=title_match.group(1).strip() if title_match else proxy.title,
+            text=proxy.text,
+            content_type="text/markdown; source=reader-fallback",
+            status_code=proxy.status_code,
+            links=links,
+            fetched_at=proxy.fetched_at,
+            sha256=proxy.sha256,
+            truncated=proxy.truncated,
+        )
 
     async def _fetch_direct(self, url: str) -> PageDocument:
         current_url = url
