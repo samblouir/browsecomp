@@ -89,17 +89,25 @@ report: {}
 
 
 @pytest.mark.parametrize(
-    "name",
-    ["star-dev-baseline.yaml", "star-smoke.yaml", "star-headline.yaml"],
+    ("name", "strategy_recovery", "max_calls"),
+    [
+        ("star-dev-baseline.yaml", False, 3),
+        ("star-smoke.yaml", False, 3),
+        ("star-headline.yaml", True, 4),
+    ],
 )
-def test_star_profiles_use_selective_star2_help(name: str) -> None:
+def test_star_profiles_use_selective_star2_help(
+    name: str,
+    strategy_recovery: bool,
+    max_calls: int,
+) -> None:
     parsed = load_config(Path(__file__).parents[1] / "configs" / name)
     assert parsed.agent.automatic_external_requests == 1
-    assert parsed.agent.automatic_external_strategy_recovery is False
+    assert parsed.agent.automatic_external_strategy_recovery is strategy_recovery
     assert parsed.agent.automatic_finalization_rescue_after_seconds == 0
     assert parsed.external_model.mode == "agent"
     assert parsed.external_model.agent_model == "frontierrl/star-2"
-    assert parsed.external_model.max_calls_per_task == 3
+    assert parsed.external_model.max_calls_per_task == max_calls
     assert parsed.external_model.max_concurrency == 32
     assert parsed.external_model.max_output_tokens == 16384
     assert parsed.model.api_base == "http://127.0.0.1:8003/v1"
