@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import shutil
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,8 @@ from ..util import (
     utc_now_iso,
 )
 from .storage import RunStorage
+
+_MIN_RUN_FREE_BYTES = 2 * 1024**3
 
 
 class BenchmarkEngine:
@@ -119,6 +122,14 @@ class BenchmarkEngine:
             )
         if limit is not None and limit < 1:
             raise ValueError("limit must be positive")
+        self.config.run.output_dir.mkdir(parents=True, exist_ok=True)
+        free_bytes = shutil.disk_usage(self.config.run.output_dir).free
+        if free_bytes < _MIN_RUN_FREE_BYTES:
+            raise RuntimeError(
+                "Insufficient free disk for a durable benchmark run: "
+                f"{free_bytes / 1024**3:.2f} GiB available; "
+                f"at least {_MIN_RUN_FREE_BYTES / 1024**3:.0f} GiB required"
+            )
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.storage.write_private_readme()
         write_dataset_manifest(self.config.dataset)

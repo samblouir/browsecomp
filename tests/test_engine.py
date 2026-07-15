@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -176,3 +177,31 @@ async def test_engine_runs_a_locked_heldout_range(monkeypatch, tmp_path: Path) -
     assert summary["n_scored"] == 2
     assert [record["subset_rank"] for record in records] == [5, 6]
     assert lock["selection"] == {"start": 5, "limit": 2}
+
+
+@pytest.mark.asyncio
+async def test_engine_fails_before_writing_lock_when_disk_space_is_too_low(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import browsecomp250.run.engine as engine_module
+
+    config = AppConfig(
+        run=RunConfig(name="fixture-low-disk", output_dir=tmp_path / "runs"),
+        dataset=DatasetConfig(),
+        model=ModelConfig(api_base="https://model.test/v1", api_key="key", model="star"),
+        search=SearchConfig(provider="searxng", cache_path=tmp_path / "search.sqlite3"),
+        browser=BrowserConfig(cache_path=tmp_path / "pages.sqlite3", block_private_networks=False),
+        agent=AgentConfig(),
+        grader=GraderConfig(mode="deterministic"),
+        report=ReportConfig(),
+    )
+    monkeypatch.setattr(
+        engine_module.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(total=10, used=9, free=1),
+    )
+
+    with pytest.raises(RuntimeError, match="Insufficient free disk"):
+        await BenchmarkEngine(config).run(limit=1)
+    assert not (tmp_path / "runs" / "fixture-low-disk" / "run.lock.json").exists()
