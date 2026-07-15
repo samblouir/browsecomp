@@ -1,4 +1,5 @@
 import hashlib
+import json
 from copy import deepcopy
 from pathlib import Path
 
@@ -625,6 +626,87 @@ def test_result_has_urls_detects_batched_search_candidates() -> None:
     assert not AgentRunner._result_has_urls({"searches": [{"query": "q", "results": []}]})
 
 
+@pytest.mark.asyncio
+async def test_agent_rejects_final_until_required_independent_search(tmp_path: Path) -> None:
+    def tool_call(call_id: str, name: str, arguments: dict) -> ModelResponse:
+        return ModelResponse(
+            content="",
+            raw_message={
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": json.dumps(arguments)},
+                    }
+                ],
+            },
+        )
+
+    class PrematureFinalModel:
+        def __init__(self) -> None:
+            self.calls = []
+            self.responses = iter(
+                [
+                    tool_call(
+                        "call-early",
+                        "final",
+                        {
+                            "explanation": "guess",
+                            "exact_answer": "Wrong",
+                            "confidence": 90,
+                            "citations": ["https://example.test/guess"],
+                        },
+                    ),
+                    tool_call("call-search", "search", {"query": "candidate falsification"}),
+                    tool_call(
+                        "call-final",
+                        "final",
+                        {
+                            "explanation": "verified",
+                            "exact_answer": "Answer",
+                            "confidence": 80,
+                            "citations": ["https://example.test/evidence"],
+                        },
+                    ),
+                ]
+            )
+
+        async def chat(self, messages, **kwargs):
+            self.calls.append(deepcopy(messages))
+            return next(self.responses)
+
+        async def close(self):
+            return None
+
+    model = PrematureFinalModel()
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="tools",
+        ),
+        AgentConfig(
+            max_steps=3,
+            max_search_calls=2,
+            min_search_calls_before_final=1,
+            require_citations=True,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=model,
+    )
+    outcome = await runner.run("Question")
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Answer"
+    assert outcome.search_calls == 1
+    assert model.calls[1][-1]["role"] == "tool"
+    assert model.calls[1][-1]["tool_call_id"] == "call-early"
+    assert "Finalization is premature" in model.calls[1][-1]["content"]
+
+
 def test_search_novelty_suppresses_date_range_and_near_duplicate_variants() -> None:
     action, suppressed = AgentRunner._filter_redundant_search_action(
         AgentAction(
@@ -678,6 +760,19 @@ def test_consultation_strategy_uses_only_designated_role() -> None:
         prior_queries=["already searched 2012..2023"],
         limit=3,
     ) == ["new entity history"]
+
+
+def test_finalization_fallback_never_borrows_unrelated_context_citations() -> None:
+    reviews = [
+        {
+            "ok": True,
+            "content": (
+                '{"action":"final","explanation":"unsupported guess",'
+                '"exact_answer":"Candidate","confidence":99,"citations":[]}'
+            ),
+        }
+    ]
+    assert AgentRunner._best_review_fallback(reviews) is None
 
 
 def test_candidate_urls_are_selected_round_robin() -> None:

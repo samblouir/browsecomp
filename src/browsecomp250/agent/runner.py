@@ -491,6 +491,48 @@ class AgentRunner:
                 )
             self._emit("action_selected", step=step, action=action.action, payload=action.payload)
 
+            if (
+                action.action == "final"
+                and search_calls < self.agent_config.min_search_calls_before_final
+            ):
+                minimum = self.agent_config.min_search_calls_before_final
+                correction = (
+                    "Finalization is premature. Before returning final, run independent public-web "
+                    f"searches that falsify the leading candidate (minimum search calls: {minimum}; "
+                    f"completed: {search_calls}). Verify every hard clue without changing its "
+                    "relation type."
+                )
+                errors.append(correction)
+                raw_tool_calls = assistant_message.get("tool_calls")
+                if (
+                    protocol in {"tools", "auto"}
+                    and isinstance(raw_tool_calls, list)
+                    and raw_tool_calls
+                ):
+                    messages.append(assistant_message)
+                    rejected_tool_call = raw_tool_calls[0]
+                    correction_message = {
+                        "role": "tool",
+                        "tool_call_id": rejected_tool_call.get("id", f"call-{step}"),
+                        "name": str(
+                            (rejected_tool_call.get("function") or {}).get("name") or "final"
+                        ),
+                        "content": canonical_json({"ok": False, "error": correction}),
+                    }
+                else:
+                    messages.append({"role": "assistant", "content": response.content})
+                    correction_message = {"role": "user", "content": correction}
+                messages.append(correction_message)
+                transcript.append(correction_message)
+                chain_delta_messages = [correction_message]
+                self._emit(
+                    "premature_final_rejected",
+                    step=step,
+                    search_calls=search_calls,
+                    minimum_search_calls=minimum,
+                )
+                continue
+
             if action.action == "final":
                 outcome = self._final_outcome(
                     action,
@@ -1885,7 +1927,10 @@ class AgentRunner:
                 "directly supported, inferred, unknown, and contradicted. Missing source text is "
                 "unknown, not a contradiction, but an exact matched source saying the required "
                 "outcome did not occur is affirmative contradiction. Rank candidates comparatively "
-                "and return your single best concrete answer as a final JSON action.",
+                "and return your single best concrete answer as a final JSON action. Reject any "
+                "candidate that only fits after substituting a related but different relation, such "
+                "as a later breakthrough for a debut, an event for an artifact, participation for "
+                "organizing, or beneficiary geography for the candidate's origin.",
             ),
             (
                 "Comparative adversarial auditor",
@@ -1912,7 +1957,8 @@ class AgentRunner:
                     "article, prefer the article's explicit name form over historical guesswork. "
                     "This is a forced-answer task: return exactly one final JSON action with a "
                     "concrete answer of the requested type. Unresolved evidence lowers confidence "
-                    "but never permits an abstention or meta-answer."
+                    "but never permits an abstention or meta-answer. Before finalizing, use public "
+                    "search to try to falsify the leading candidate against every hard clue."
                 ),
                 "query": (
                     f"Role: {role}\n\n{task}\n\nReturn exactly: "
@@ -1956,8 +2002,11 @@ class AgentRunner:
                     "task: select one concrete candidate even when evidence is incomplete, and "
                     "express uncertainty only through calibrated confidence and explanation. "
                     "Never return unknown, insufficient evidence, not verifiable, cannot determine, "
-                    "or any other abstention or meta-answer. Return exactly one JSON object and no "
-                    "markdown."
+                    "or any other abstention or meta-answer. A candidate fails if a clue only works "
+                    "after changing the relation type; do not relabel a breakthrough as a debut, an "
+                    "appointment as an album, participation as organizing, or a beneficiary as a "
+                    "homeland. Independently search the leading candidate and strongest alternative "
+                    "before finalizing. Return exactly one JSON object and no markdown."
                 ),
                 "query": (
                     "Return this exact schema: "
@@ -2076,7 +2125,7 @@ class AgentRunner:
             if action is None or self._is_abstention_answer(
                 str(action.payload.get("exact_answer") or "")
             ):
-                fallback = self._best_review_fallback(reviews, context=context)
+                fallback = self._best_review_fallback(reviews)
                 if fallback is None:
                     return None, {**result, "ok": False}
                 action = fallback
@@ -2120,24 +2169,28 @@ class AgentRunner:
     def _best_review_fallback(
         cls,
         reviews: list[dict[str, Any]],
-        *,
-        context: str,
     ) -> AgentAction | None:
         candidates = cls._concrete_review_actions(reviews)
-        if not candidates:
+        cited_candidates = [
+            candidate
+            for candidate in candidates
+            if any(
+                isinstance(item, str) and item.startswith(("http://", "https://"))
+                for item in candidate.payload.get("citations") or []
+            )
+        ]
+        if not cited_candidates:
             return None
-        candidates.sort(
+        cited_candidates.sort(
             key=lambda candidate: float(candidate.payload.get("confidence") or 0),
             reverse=True,
         )
-        chosen = candidates[0]
+        chosen = cited_candidates[0]
         citations = [
             str(item)
             for item in chosen.payload.get("citations") or []
             if isinstance(item, str) and item.startswith(("http://", "https://"))
         ]
-        if not citations:
-            citations = list(dict.fromkeys(_PUBLIC_URL.findall(context)))[:4]
         try:
             confidence = float(chosen.payload.get("confidence") or 0)
         except (TypeError, ValueError):

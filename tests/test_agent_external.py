@@ -96,6 +96,7 @@ async def test_agent_external_broker_forces_star2_tools_and_runs_concurrently() 
     assert config["model"].max_output_tokens == 16384
     assert config["model"].extra_body["top_p"] == 0.95
     assert config["model"].extra_body["vllm_xargs"] == {"frontierrl_max_denoising_steps": 48}
+    assert config["agent"].min_search_calls_before_final == 1
     assert config["kwargs"]["external_model_broker"] is None
     assert config["kwargs"]["external_model_config"].enabled is False
 

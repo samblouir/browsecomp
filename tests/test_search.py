@@ -73,7 +73,7 @@ async def test_openrouter_exa_uses_only_standardized_url_citations(tmp_path: Pat
                                 {
                                     "type": "url_citation",
                                     "url_citation": {
-                                        "url": "https://example.test/b",
+                                        "url": "https://example.test/b\\",
                                         "title": "Second source",
                                         "content": "Second cited passage.",
                                     },
@@ -126,9 +126,40 @@ async def test_openrouter_exa_uses_only_standardized_url_citations(tmp_path: Pat
         "output_tokens": 2,
         "total_tokens": 125,
         "results": 2,
+        "filtered_query_mirrors": 0,
         "cost_usd": 0.0052,
     }
     await client.aclose()
+
+
+def test_openrouter_exa_detects_repetitive_query_mirror_but_not_real_article() -> None:
+    query = '"made an album for fun" 2022 article England Roman numerals albums'
+    mirrored_title = "Made an Album for Fun 2022 Article England Roman Numerals Albums"
+    mirrored_url = (
+        "https://spam.test/video/made-an-album-for-fun-2022-article-england-roman-numerals-albums/"
+    )
+    repeated = " ".join([query] * 3)
+    assert OpenRouterExaSearchProvider._looks_like_query_mirror(
+        query,
+        title=mirrored_title,
+        url=mirrored_url,
+        snippet=repeated,
+    )
+    assert OpenRouterExaSearchProvider._looks_like_query_mirror(
+        query,
+        title=mirrored_title,
+        url=mirrored_url,
+        snippet="# Made an album for fun 2022 article England Roman numerals albums",
+    )
+    assert not OpenRouterExaSearchProvider._looks_like_query_mirror(
+        query,
+        title=mirrored_title,
+        url=mirrored_url,
+        snippet=(
+            "The musician described the recording process, collaborators, release history, "
+            "and artistic goals in a separately authored interview."
+        ),
+    )
 
 
 @pytest.mark.asyncio

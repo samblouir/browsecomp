@@ -57,6 +57,7 @@ class AgentExternalModelBroker:
             deep=True,
             update={
                 "max_steps": config.agent_max_steps,
+                "min_search_calls_before_final": config.agent_min_search_calls_before_final,
                 "automatic_external_after_search_calls": 0,
                 "automatic_finalization_rescue_after_rejections": 0,
                 "automatic_finalization_rescue_after_seconds": 0,
@@ -116,6 +117,10 @@ class AgentExternalModelBroker:
         question_parts = [
             "Act as an independent research helper for another agent.",
             "Use the supplied public-web tools whenever they can verify a material claim.",
+            (
+                "Before finalizing, run independent searches that try to falsify the leading "
+                "candidate and test whether every hard clue preserves its exact relation type."
+            ),
             (
                 "Complete through the final tool. Put the full requested deliverable in final."
                 "explanation; if the request specifies JSON, place that exact JSON object in the "

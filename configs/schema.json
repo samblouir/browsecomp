@@ -9,6 +9,13 @@
           "title": "Max Steps",
           "type": "integer"
         },
+        "min_search_calls_before_final": {
+          "default": 0,
+          "maximum": 20,
+          "minimum": 0,
+          "title": "Min Search Calls Before Final",
+          "type": "integer"
+        },
         "max_search_calls": {
           "default": 40,
           "minimum": 0,
@@ -418,6 +425,13 @@
           "default": 80,
           "minimum": 1,
           "title": "Agent Max Steps",
+          "type": "integer"
+        },
+        "agent_min_search_calls_before_final": {
+          "default": 1,
+          "maximum": 20,
+          "minimum": 0,
+          "title": "Agent Min Search Calls Before Final",
           "type": "integer"
         },
         "agent_max_denoising_steps": {

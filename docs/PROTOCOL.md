@@ -48,6 +48,15 @@ The model can invoke only:
 
 The model cannot execute shell commands, arbitrary Python, code interpreters, file reads, or browser-profile actions.
 
+Agent-backed external helpers are subject to the same tool protocol. Star
+profiles require at least one independent public-web search before a helper may
+finalize; a premature native `final` tool call receives a normal tool error in
+the same assistant turn so the model can continue without losing tool-call
+state. Final reviews must preserve the exact relation expressed by each clue and
+must carry their own supporting public citation. The controller never borrows an
+unrelated URL from surrounding context to make an uncited recommendation appear
+supported.
+
 ## Headline budgets
 
 | Budget | Default |

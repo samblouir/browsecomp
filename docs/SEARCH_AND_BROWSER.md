@@ -77,7 +77,17 @@ This adapter forces OpenRouter's `web` plugin to use Exa and requests ten
 results per query. The configured carrier model is transport only: its generated
 answer is discarded. Only standardized `url_citation` annotations are mapped to
 titles, URLs, and snippets. The run manifest records live request count, cited
-result count, carrier input/output tokens, and provider-reported cost.
+result count, carrier input/output tokens, provider-reported cost, and the number
+of rejected query-mirroring results. Adapter version, carrier model, engine, and
+maximum result count are part of the cache identity.
+
+The adapter rejects a narrow class of retrieval-poisoning pages whose long
+title and URL slug mechanically reproduce a long search query and whose snippet
+adds little independent information. This is intentionally not a general domain
+blocklist: a separately authored article is retained even when its title happens
+to overlap the query. The model prompt also requires clue decomposition and
+candidate-centric follow-up searches instead of answer-shaped copies of the
+question.
 
 The evaluated reasoning model remains Star-7, and `ask_external_model` remains
 the separately configured Star-2 agent. Exa search therefore does not insert a

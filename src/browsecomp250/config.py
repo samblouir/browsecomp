@@ -194,6 +194,7 @@ class ExternalModelConfig(StrictConfigModel):
     agent_model: str = "frontierrl/star-2"
     agent_response_chain: bool = True
     agent_max_steps: int = Field(default=80, ge=1)
+    agent_min_search_calls_before_final: int = Field(default=1, ge=0, le=20)
     agent_max_denoising_steps: int = Field(default=48, ge=1, le=48)
 
     @field_validator("api_url")
@@ -232,6 +233,7 @@ class BrowserConfig(StrictConfigModel):
 
 class AgentConfig(StrictConfigModel):
     max_steps: int = Field(default=80, ge=1)
+    min_search_calls_before_final: int = Field(default=0, ge=0, le=20)
     max_search_calls: int = Field(default=40, ge=0)
     max_page_opens: int = Field(default=100, ge=0)
     max_find_calls: int = Field(default=80, ge=0)

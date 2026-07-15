@@ -136,6 +136,7 @@ external_model:
   agent_model: frontierrl/star-2
   agent_response_chain: ${BC250_EXTERNAL_AGENT_RESPONSE_CHAIN:-false}
   agent_max_steps: 80
+  agent_min_search_calls_before_final: 1
   agent_max_denoising_steps: 48
 
 grader:
