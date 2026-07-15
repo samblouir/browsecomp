@@ -79,6 +79,7 @@ class ModelConfig(StrictConfigModel):
     input_price_per_million: float = Field(default=0.0, ge=0)
     output_price_per_million: float = Field(default=0.0, ge=0)
     extra_body: dict[str, Any] = Field(default_factory=dict)
+    routing_backend_pool: list[str] = Field(default_factory=list)
 
     @field_validator("api_base")
     @classmethod
@@ -99,6 +100,16 @@ class ModelConfig(StrictConfigModel):
         if not isinstance(parsed, dict):
             raise ValueError("extra_headers_json must decode to an object")
         return {str(k): str(v) for k, v in parsed.items()}
+
+    @field_validator("routing_backend_pool")
+    @classmethod
+    def validate_routing_backend_pool(cls, value: list[str]) -> list[str]:
+        cleaned = [str(item).strip() for item in value]
+        if any(not item for item in cleaned):
+            raise ValueError("routing_backend_pool entries must be non-empty")
+        if len(cleaned) != len(set(cleaned)):
+            raise ValueError("routing_backend_pool entries must be unique")
+        return cleaned
 
 
 class SearchConfig(StrictConfigModel):
@@ -211,6 +222,7 @@ class ExternalModelConfig(StrictConfigModel):
     agent_max_steps: int = Field(default=80, ge=1)
     agent_min_search_calls_before_final: int = Field(default=1, ge=0, le=20)
     agent_max_denoising_steps: int = Field(default=48, ge=1, le=48)
+    agent_routing_backend_pool: list[str] = Field(default_factory=list)
 
     @field_validator("api_url")
     @classmethod

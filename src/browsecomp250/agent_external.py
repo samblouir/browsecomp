@@ -52,6 +52,7 @@ class AgentExternalModelBroker:
                     "frontierrl_max_denoising_steps": config.agent_max_denoising_steps,
                 },
             },
+            routing_backend_pool=config.agent_routing_backend_pool,
         )
         self.agent_config = agent_config.model_copy(
             deep=True,

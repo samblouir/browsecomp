@@ -650,6 +650,27 @@ def test_benchmark_routing_headers_spread_rows_but_keep_each_chain_sticky() -> N
     )
 
 
+def test_explicit_backend_pool_distributes_and_pins_independent_chains() -> None:
+    backend_pool = [f"star2-{index}" for index in range(8)]
+    namespaces = [
+        f"campaign-run:bc250-{index:03d}-row-{index:04d}:attempt-1:star2-agent:1"
+        for index in range(256)
+    ]
+    selected = {
+        AgentRunner._routing_headers(
+            namespace,
+            routing_backend_pool=backend_pool,
+        )["X-FRL-Require-Backend"]
+        for namespace in namespaces
+    }
+    assert selected == set(backend_pool)
+    namespace = namespaces[17]
+    first = AgentRunner._routing_headers(namespace, routing_backend_pool=backend_pool)
+    second = AgentRunner._routing_headers(namespace, routing_backend_pool=backend_pool)
+    assert first == second
+    assert first["X-FRL-Require-Backend"] in backend_pool
+
+
 @pytest.mark.asyncio
 async def test_agent_rejects_final_until_required_independent_search(tmp_path: Path) -> None:
     def tool_call(call_id: str, name: str, arguments: dict) -> ModelResponse:

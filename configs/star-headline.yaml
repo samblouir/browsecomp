@@ -141,6 +141,15 @@ external_model:
   agent_max_steps: 80
   agent_min_search_calls_before_final: 1
   agent_max_denoising_steps: 48
+  agent_routing_backend_pool:
+    - local_port_9364
+    - vastai_pro6000_109_star2_gpu0
+    - vastai_pro6000_109_star2_gpu1
+    - vastai_pro6000_109_star2_gpu2
+    - vastai_pro6000_109_star2_gpu3
+    - vastai_pro6000_109_star2_gpu4
+    - vastai_pro6000_109_star2_gpu5
+    - vastai_pro6000_109_star2_gpu6
 
 grader:
   mode: official_llm

@@ -178,7 +178,10 @@ class AgentRunner:
         previous_response_id: str | None = None
         chain_delta_messages: list[dict[str, Any]] | None = None
         namespace_material = request_namespace or question
-        request_headers = self._routing_headers(namespace_material)
+        request_headers = self._routing_headers(
+            namespace_material,
+            routing_backend_pool=self.model_config.routing_backend_pool,
+        )
         chain_namespace = request_headers["X-FRL-Conversation-Id"].removeprefix("bc250-")
         external_namespace = request_namespace or chain_namespace
 
@@ -1310,9 +1313,19 @@ class AgentRunner:
         )
 
     @staticmethod
-    def _routing_headers(namespace_material: str) -> dict[str, str]:
+    def _routing_headers(
+        namespace_material: str,
+        *,
+        routing_backend_pool: list[str] | None = None,
+    ) -> dict[str, str]:
         chain_namespace = hashlib.sha256(namespace_material.encode("utf-8")).hexdigest()[:24]
         headers = {"X-FRL-Conversation-Id": f"bc250-{chain_namespace}"}
+        if routing_backend_pool:
+            backend_index = int(
+                hashlib.sha256(namespace_material.encode("utf-8")).hexdigest()[:16],
+                16,
+            ) % len(routing_backend_pool)
+            headers["X-FRL-Require-Backend"] = routing_backend_pool[backend_index]
         benchmark_namespace = _BENCHMARK_REQUEST_NAMESPACE.fullmatch(namespace_material)
         if benchmark_namespace is None:
             return headers

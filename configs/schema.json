@@ -440,6 +440,13 @@
           "minimum": 1,
           "title": "Agent Max Denoising Steps",
           "type": "integer"
+        },
+        "agent_routing_backend_pool": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Agent Routing Backend Pool",
+          "type": "array"
         }
       },
       "title": "ExternalModelConfig",
@@ -643,6 +650,13 @@
           "additionalProperties": true,
           "title": "Extra Body",
           "type": "object"
+        },
+        "routing_backend_pool": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Routing Backend Pool",
+          "type": "array"
         }
       },
       "required": [
