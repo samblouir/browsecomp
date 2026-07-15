@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from browsecomp250.config import load_config
 from browsecomp250.util import expand_env
 
@@ -84,6 +86,21 @@ report: {}
     assert public["external_model"]["agent_model"] == "frontierrl/star-2"
     assert public["model"]["max_output_tokens"] == 16384
     assert public["model"]["allow_empty_api_key"] is False
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["star-dev-baseline.yaml", "star-smoke.yaml", "star-headline.yaml"],
+)
+def test_star_profiles_use_selective_star2_help(name: str) -> None:
+    parsed = load_config(Path(__file__).parents[1] / "configs" / name)
+    assert parsed.agent.automatic_external_requests == 1
+    assert parsed.agent.automatic_external_strategy_recovery is False
+    assert parsed.agent.automatic_finalization_rescue_after_seconds == 0
+    assert parsed.external_model.mode == "agent"
+    assert parsed.external_model.agent_model == "frontierrl/star-2"
+    assert parsed.external_model.max_calls_per_task == 3
+    assert parsed.external_model.max_output_tokens == 16384
 
 
 def test_unknown_config_field_is_rejected(tmp_path: Path) -> None:

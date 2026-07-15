@@ -33,7 +33,7 @@ Concurrent benchmark engine
         ├──► External-help backend
         │       ├── isolated Star-2 tool agents for Star campaign configs
         │       ├── generic production-broker adapter for comparison configs
-        │       └── automatic candidate, adversarial, and strategy reviews
+        │       └── one strategy-first review with evidence-triggered escalation
         │
         ├──► Page fetcher
         │       ├── direct HTTP

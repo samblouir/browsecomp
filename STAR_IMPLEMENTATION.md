@@ -32,9 +32,9 @@ Both `configs/star-smoke.yaml` and `configs/star-headline.yaml` enforce:
 - a maximum of 48 denoising steps;
 - parallel `search_many` and `open_many` actions;
 - reproducible Brave API search with batched query fanout;
-- selective `ask_external_model` calls, including four-call concurrent batches;
-- four concurrent independent reviews automatically attached after eight
-  logical searches so difficult tasks cannot silently skip external help;
+- selective `ask_external_model` calls, with one strategy-first Star-2 helper
+  attached only after eight logical searches and later calls reserved for a
+  concrete evidence dispute;
 - automatic inspection of up to four top result pages after each two-search
   phase, with a safe reader fallback for blocked public origins;
 - bounded duplicate-action recovery that opens fresh discovered pages before
@@ -43,10 +43,9 @@ Both `configs/star-smoke.yaml` and `configs/star-headline.yaml` enforce:
 - ten idempotent model-transport retries so brief Agent endpoint restarts do
   not discard a completed research trajectory;
 - remaining-budget clipping for batch actions and one structured external
-  finalization rescue if the backend still requests evidence at the hard cap;
-- a 900-second wall-clock trigger for a three-review candidate, constraint, and
-  falsification council followed by an independent structured adjudicator,
-  preserving enough of the 1,800-second task budget for grading;
+  finalization rescue only after two rejected forced-final turns at the hard cap;
+- no wall-clock-triggered council: elapsed time alone is not evidence that more
+  reviewers will improve the answer;
 - bounded wall time and action budgets; and
 - durable per-step heartbeat and event logs.
 
@@ -68,9 +67,9 @@ environment override.
 ## External consultation
 
 `ask_external_model` is a caller-owned native tool in this evaluator. The Star
-development profile fixes every helper request to `frontierrl/star-2` through
-the Agent API. Each helper is a real isolated tool agent: it can search Brave,
-open pages, find text, take notes, and finalize. It cannot call
+development, smoke, and headline profiles fix every helper request to
+`frontierrl/star-2` through the Agent API. Each helper is a real isolated tool
+agent: it can search Brave, open pages, find text, take notes, and finalize. It cannot call
 `ask_external_model` recursively. The tool accepts either one `query` or
 `requests` containing up to four independent queries; batched requests run
 concurrently. Defaults are temperature `0.7`, top-p `0.95`, 16,384 output
@@ -93,7 +92,7 @@ model suggestions cannot redirect this mode away from Star-2. The older
 `mode: broker` adapter remains available to deliberately separate comparison
 profiles; it is not selected by `configs/star-dev-baseline.yaml`.
 
-The Star development profile sets `automatic_external_after_search_calls: 8`
+The Star profiles set `automatic_external_after_search_calls: 8`
 and `automatic_external_requests: 1`. Once per item, the controller runs one
 strategy-first independent investigator that identifies candidate entities,
 performs a minimal-pair adversarial check, and returns discriminating search
@@ -101,8 +100,9 @@ routes. The controller executes those routes and opens their evidence. The
 parent can request another focused helper only when a concrete
 contradiction, identity ambiguity, or answer-type dispute remains. This avoids
 launching four overlapping full browsing agents on routine items. The hard
-per-item helper budget is four. Helper output is embedded in the current search
-tool result, preserving the same assistant/tool continuation and stable
+per-item helper budget is three: one strategy helper, then at most one reviewer
+and one adjudicator after a forced-final failure. Helper output is embedded in
+the current search tool result, preserving the same assistant/tool continuation and stable
 response-chain history. Public URLs proposed by the helper are opened
 automatically and attached for factual checking. A helper failure does not
 discard successful search evidence, and exhausting help does not force the main

@@ -61,14 +61,16 @@ The model cannot execute shell commands, arbitrary Python, code interpreters, fi
 | Batch size | 7 |
 | Per-task wall-clock timeout | 1,800 seconds |
 
-After eight logical searches, the Star profiles attach four concurrent
-external reviews to the current search result when the model has not already
-requested external help. These are candidate-generation, adversarial-audit,
-search-strategy, and independent final-review roles. The controller opens public
-source URLs from those reviews and also inspects up to four top result pages
-after each two-search phase. They are not treated as ground truth, do not have
-access to private benchmark artifacts, and must be verified with web evidence.
-This scaffold is part of the reported evaluation protocol.
+After eight logical searches, the Star profiles attach one strategy-first
+Star-2 helper to the current search result when the model has not already
+requested external help. It identifies competing entities, performs a
+minimal-pair challenge, tests a discriminating clue with public-web tools, and
+returns diverse search routes. Additional helpers are reserved for a concrete
+contradiction, identity ambiguity, or answer-type dispute. The controller opens
+public source URLs and also inspects top result pages after each two-search
+phase. Helper claims are not ground truth, have no access to private benchmark
+artifacts, and must be verified with web evidence. This scaffold is part of the
+reported evaluation protocol.
 
 If Star immediately repeats an identical search action, the controller does
 not spend the search budget on a redundant request. It opens fresh, previously
@@ -80,15 +82,12 @@ changing the model-visible capabilities mid-chain.
 Batch actions that would only slightly cross a hard budget are clipped to the
 remaining allowance rather than rejected wholesale. The Star profiles permit
 80 logical searches. If the backend still emits non-final research requests on
-two turns after the true hard cap, one independent external finalizer receives
-the accumulated audited evidence and must return the standard final-action
-schema. This bounded fallback is disclosed as part of the evaluation scaffold.
-The same bounded finalization path triggers after 900 seconds if the main
-research loop has still not produced a final action. When four external-call
-slots remain, three concurrent reviewers build a candidate matrix, falsify
-unsupported assumptions, and independently solve the task; a fourth call
-adjudicates those reviews against direct evidence. This leaves half of the task
-budget for finalization, transport retries, and grading.
+two turns after the true hard cap, a bounded external finalizer receives the
+accumulated audited evidence and must return the standard final-action schema.
+It uses only the helper slots still available within the three-call task ceiling.
+Elapsed time alone does not trigger a council. This bounded fallback is
+disclosed as part of the evaluation scaffold and preserves task time for
+research, transport retries, and grading.
 
 `headline` enforces lower bounds rather than exact values to permit endpoint-specific output settings, but comparable campaigns should use identical values.
 
