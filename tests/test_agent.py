@@ -61,6 +61,65 @@ class ChainFakeModel:
         return None
 
 
+class ToolAbstentionChainModel:
+    def __init__(self):
+        self.calls = []
+        self.responses = iter(
+            [
+                ModelResponse(
+                    content="",
+                    response_id="chatcmpl-frlstate-abstention",
+                    raw_message={
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-abstention",
+                                "type": "function",
+                                "function": {
+                                    "name": "final",
+                                    "arguments": (
+                                        '{"explanation":"uncertain",'
+                                        '"exact_answer":"Insufficient evidence",'
+                                        '"confidence":95,"citations":[]}'
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                ),
+                ModelResponse(
+                    content="",
+                    response_id="chatcmpl-frlstate-concrete",
+                    raw_message={
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-concrete",
+                                "type": "function",
+                                "function": {
+                                    "name": "final",
+                                    "arguments": (
+                                        '{"explanation":"best candidate",'
+                                        '"exact_answer":"Concrete Answer",'
+                                        '"confidence":65,'
+                                        '"citations":["https://example.test"]}'
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                ),
+            ]
+        )
+
+    async def chat(self, messages, **kwargs):
+        self.calls.append((deepcopy(messages), deepcopy(kwargs)))
+        return next(self.responses)
+
+    async def close(self):
+        return None
+
+
 class FinalCaptureModel:
     def __init__(self):
         self.kwargs = None
@@ -122,6 +181,35 @@ class BudgetRescueModel:
             [
                 ModelResponse(content='{"action":"search","query":"first clue"}'),
                 ModelResponse(content='{"action":"search","query":"final verification"}'),
+            ]
+        )
+
+    async def chat(self, messages, **kwargs):
+        del messages, kwargs
+        return next(self.responses)
+
+    async def close(self):
+        return None
+
+
+class AbstentionThenConcreteModel:
+    def __init__(self):
+        self.responses = iter(
+            [
+                ModelResponse(
+                    content=(
+                        '{"action":"final","explanation":"uncertain",'
+                        '"exact_answer":"Not verifiable from the supplied evidence",'
+                        '"confidence":95,"citations":["https://example.test"]}'
+                    )
+                ),
+                ModelResponse(
+                    content=(
+                        '{"action":"final","explanation":"best supported candidate",'
+                        '"exact_answer":"Concrete Answer","confidence":65,'
+                        '"citations":["https://example.test"]}'
+                    )
+                ),
             ]
         )
 
@@ -199,6 +287,54 @@ class RescueExternalModelBroker:
         ]
 
 
+class RepairingExternalModelBroker:
+    def __init__(self):
+        self.calls = []
+
+    async def ask_many(self, requests, *, request_namespace):
+        self.calls.append((deepcopy(requests), request_namespace))
+        if request_namespace.endswith(":finalization-reviews"):
+            answers = [("Candidate One", 62), ("Candidate Two", 58)]
+        elif request_namespace.endswith(":finalization-adjudication"):
+            answers = [("Insufficient evidence", 96)]
+        elif request_namespace.endswith(":finalization-repair"):
+            answers = [("Concrete Answer", 64)]
+        else:
+            raise AssertionError(request_namespace)
+        return [
+            {
+                "ok": True,
+                "status": "succeeded",
+                "request_id": f"emr_{len(self.calls)}_{index}",
+                "content": (
+                    '{"action":"final","explanation":"comparative audit",'
+                    f'"exact_answer":"{answer}","confidence":{confidence},'
+                    '"citations":["https://example.test"]}'
+                ),
+            }
+            for index, (answer, confidence) in enumerate(answers, start=1)
+        ]
+
+
+class AbstainingExternalModelBroker(RepairingExternalModelBroker):
+    async def ask_many(self, requests, *, request_namespace):
+        if request_namespace.endswith(":finalization-repair"):
+            self.calls.append((deepcopy(requests), request_namespace))
+            return [
+                {
+                    "ok": True,
+                    "status": "succeeded",
+                    "request_id": "emr_repair_abstention",
+                    "content": (
+                        '{"action":"final","explanation":"still uncertain",'
+                        '"exact_answer":"Cannot determine","confidence":99,'
+                        '"citations":["https://example.test"]}'
+                    ),
+                }
+            ]
+        return await super().ask_many(requests, request_namespace=request_namespace)
+
+
 @pytest.mark.asyncio
 async def test_agent_search_then_final(tmp_path: Path) -> None:
     runner = AgentRunner(
@@ -247,6 +383,39 @@ async def test_agent_response_chain_sends_only_tool_delta(tmp_path: Path) -> Non
     assert delta_messages[0]["content"].startswith("Tool result:")
     assert delta_kwargs["extra_body"]["frontierrl_messages_mode"] == "delta"
     assert delta_kwargs["extra_body"]["frontierrl_previous_response_id"] == "chatcmpl-frlstate-root"
+
+
+@pytest.mark.asyncio
+async def test_agent_response_chain_rejects_abstention_with_tool_result_delta(
+    tmp_path: Path,
+) -> None:
+    model = ToolAbstentionChainModel()
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="tools",
+            response_chain=True,
+        ),
+        AgentConfig(max_steps=2, require_citations=True),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=model,
+    )
+    outcome = await runner.run("Question", request_namespace="run:item:tool-abstention")
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Concrete Answer"
+    delta_messages, delta_kwargs = model.calls[1]
+    assert len(delta_messages) == 1
+    assert delta_messages[0]["role"] == "tool"
+    assert delta_messages[0]["tool_call_id"] == "call-abstention"
+    assert "abstentions are invalid" in delta_messages[0]["content"]
+    assert (
+        delta_kwargs["extra_body"]["frontierrl_previous_response_id"]
+        == "chatcmpl-frlstate-abstention"
+    )
 
 
 @pytest.mark.asyncio
@@ -396,6 +565,46 @@ def test_forced_final_recovers_agent_backend_plain_content() -> None:
     assert action.payload["exact_answer"] == "Example"
     assert action.payload["confidence"] == 91
     assert action.payload["citations"] == ["https://example.test/source"]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "Unknown",
+        "Insufficient evidence",
+        "Not verifiable from the supplied evidence",
+        "Not conclusively identifiable from the available evidence",
+        "Cannot determine",
+        "No conclusive answer",
+    ],
+)
+def test_abstention_answers_are_detected(answer: str) -> None:
+    assert AgentRunner._is_abstention_answer(answer)
+
+
+def test_concrete_answers_are_not_abstentions() -> None:
+    assert not AgentRunner._is_abstention_answer("Arbitrary Concrete Entity")
+
+
+@pytest.mark.asyncio
+async def test_agent_retries_instead_of_accepting_abstention(tmp_path: Path) -> None:
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+        ),
+        AgentConfig(max_steps=2, require_citations=True),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=AbstentionThenConcreteModel(),
+    )
+    outcome = await runner.run("Question")
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Concrete Answer"
+    assert any("abstentions are invalid" in error for error in outcome.errors)
 
 
 def test_search_many_is_rejected_before_overspending_budget(tmp_path: Path) -> None:
@@ -636,6 +845,80 @@ async def test_hard_budget_uses_one_external_finalization_rescue(tmp_path: Path)
     assert outcome.status == "completed"
     assert outcome.exact_answer == "Answer"
     assert outcome.confidence == 90
+    assert outcome.external_model_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_finalizer_repairs_external_abstention_within_four_calls(tmp_path: Path) -> None:
+    broker = RepairingExternalModelBroker()
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=3,
+            max_search_calls=1,
+            automatic_finalization_rescue_after_rejections=1,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=BudgetRescueModel(),
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=4,
+        ),
+        external_model_broker=broker,
+    )
+    outcome = await runner.run("Question", request_namespace="run:item:repair")
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Concrete Answer"
+    assert outcome.external_model_calls == 4
+    assert [namespace.rsplit(":", 1)[-1] for _, namespace in broker.calls] == [
+        "finalization-reviews",
+        "finalization-adjudication",
+        "finalization-repair",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_finalizer_falls_back_when_repair_also_abstains(tmp_path: Path) -> None:
+    broker = AbstainingExternalModelBroker()
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=3,
+            max_search_calls=1,
+            automatic_finalization_rescue_after_rejections=1,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=BudgetRescueModel(),
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=4,
+        ),
+        external_model_broker=broker,
+    )
+    outcome = await runner.run("Question", request_namespace="run:item:fallback")
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Candidate One"
+    assert outcome.confidence == 62
     assert outcome.external_model_calls == 4
 
 

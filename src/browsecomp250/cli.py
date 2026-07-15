@@ -262,13 +262,17 @@ def doctor(
 def run(
     config: ConfigPath = Path("configs/smoke.yaml"),
     env_file: EnvPath = None,
+    start: Annotated[
+        int,
+        typer.Option(help="Start at this zero-based frozen-subset rank"),
+    ] = 0,
     limit: Annotated[int | None, typer.Option(help="Run the first N frozen subset items")] = None,
 ) -> None:
     cfg = _load(config, env_file)
     if not dataset_path(cfg.dataset).exists():
         console.print("Dataset is missing; downloading the encrypted official CSV.")
         asyncio.run(download_dataset(cfg.dataset))
-    summary = asyncio.run(BenchmarkEngine(cfg).run(limit=limit))
+    summary = asyncio.run(BenchmarkEngine(cfg).run(start=start, limit=limit))
     console.print_json(json.dumps(summary))
     console.print(f"Run directory: [bold]{cfg.run.output_dir / cfg.run.name}[/bold]")
 

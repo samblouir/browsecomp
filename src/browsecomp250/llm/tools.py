@@ -141,7 +141,10 @@ def tool_schemas(*, include_external_model: bool = True) -> list[dict[str, Any]]
         ),
         tool(
             "final",
-            "Submit the final short answer.",
+            (
+                "Submit one concrete final short answer. Missing evidence lowers confidence but "
+                "must not produce an abstention or meta-answer."
+            ),
             {
                 "explanation": {"type": "string"},
                 "exact_answer": {"type": "string"},

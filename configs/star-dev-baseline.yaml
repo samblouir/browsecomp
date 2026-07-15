@@ -1,8 +1,8 @@
 run:
-  name: browsecomp250-star7-dev-assisted-v8-20260715
+  name: "${BC250_RUN_NAME:-browsecomp250-star7-dev-assisted-v9-20260715}"
   output_dir: runs
   seed: 20260715
-  concurrency: 5
+  concurrency: 7
   attempts: 1
   shuffle: false
   resume: true
@@ -114,7 +114,7 @@ external_model:
   max_output_tokens: 16384
   max_calls_per_task: 8
   max_batch_size: 4
-  max_concurrency: 4
+  max_concurrency: 8
   timeout_seconds: 900
   max_retries: 2
 

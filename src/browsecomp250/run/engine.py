@@ -43,7 +43,7 @@ class BenchmarkEngine:
     def _secret_fingerprint(self, value: str) -> str | None:
         return sha256_bytes(value.encode("utf-8"))[:16] if value else None
 
-    def _build_lock(self) -> dict[str, Any]:
+    def _build_lock(self, *, start: int = 0, limit: int | None = None) -> dict[str, Any]:
         dataset_metadata = validate_dataset_file(
             dataset_path(self.config.dataset), self.config.dataset
         )
@@ -78,6 +78,12 @@ class BenchmarkEngine:
                 ],
             },
         }
+        selection = {"start": start, "limit": limit}
+        if start > 0:
+            # Older run locks predate ranged execution. Preserve their start=0
+            # resume compatibility while locking every nonzero held-out range.
+            replay_material["selection"] = selection
+            resume_material["selection"] = selection
         return {
             "schema_version": "1.0",
             "created_at": utc_now_iso(),
@@ -99,19 +105,27 @@ class BenchmarkEngine:
             "environment": environment_metadata(),
             "git": git_metadata(Path.cwd()),
             "cache_state_at_start": replay_material["cache_state_at_start"],
+            "selection": selection,
             "replay_hash": canonical_sha256(replay_material),
             "resume_hash": canonical_sha256(resume_material),
         }
 
-    async def run(self, *, limit: int | None = None) -> dict[str, Any]:
+    async def run(self, *, start: int = 0, limit: int | None = None) -> dict[str, Any]:
+        if start < 0:
+            raise ValueError("start must be non-negative")
+        if start >= self.config.dataset.subset_size:
+            raise ValueError(
+                f"start must be smaller than the subset size ({self.config.dataset.subset_size})"
+            )
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be positive")
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.storage.write_private_readme()
         write_dataset_manifest(self.config.dataset)
-        self.storage.write_lock(self._build_lock())
+        self.storage.write_lock(self._build_lock(start=start, limit=limit))
         items = load_items(self.config.dataset)
+        items = items[start:]
         if limit is not None:
-            if limit < 1:
-                raise ValueError("limit must be positive")
             items = items[:limit]
 
         work = [

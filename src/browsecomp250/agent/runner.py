@@ -24,6 +24,17 @@ from ..types import AgentAction, AgentOutcome, PageDocument, Usage
 from ..util import canonical_json, truncate_middle
 
 _PUBLIC_URL = re.compile(r"https?://[^\s<>()\[\]{}\"'`]+", flags=re.I)
+_ABSTENTION_ANSWER = re.compile(
+    r"^(?:"
+    r"unknown|none|n/?a|inconclusive|undetermined|"
+    r"(?:not|cannot|can't|unable\s+to)\s+(?:be\s+)?(?:determine|determined|identify|identified|"
+    r"verify|verified|conclude|concluded)|"
+    r"(?:not\s+)?(?:conclusively\s+)?(?:identifiable|verifiable|determinable)|"
+    r"(?:insufficient|inadequate|not\s+enough)\s+(?:evidence|information|data)|"
+    r"no\s+(?:conclusive\s+)?(?:answer|candidate|determination)"
+    r")(?:\b.*)?$",
+    flags=re.I,
+)
 
 
 class AgentRunner:
@@ -237,7 +248,6 @@ class AgentRunner:
             except ProtocolError as exc:
                 parse_failures += 1
                 errors.append(f"Step {step} protocol error: {exc}")
-                messages.append({"role": "assistant", "content": response.content})
                 if parse_failures > self.agent_config.parse_retries:
                     self._emit(
                         "protocol_exhausted",
@@ -250,10 +260,35 @@ class AgentRunner:
                     "Your previous response was invalid. Return exactly one valid JSON action "
                     f"without markdown. Error: {exc}"
                 )
-                correction_message = {"role": "user", "content": correction}
-                messages.append(correction_message)
-                transcript.append(correction_message)
-                chain_delta_messages = [correction_message]
+                raw_tool_calls = response.raw_message.get("tool_calls")
+                if (
+                    protocol in {"tools", "auto"}
+                    and isinstance(raw_tool_calls, list)
+                    and raw_tool_calls
+                ):
+                    rejected_tool_call = raw_tool_calls[0]
+                    assistant_error_message = {
+                        "role": "assistant",
+                        "content": response.raw_message.get("content") or "",
+                        "tool_calls": [rejected_tool_call],
+                    }
+                    correction_message = {
+                        "role": "tool",
+                        "tool_call_id": rejected_tool_call.get("id", f"call-{step}"),
+                        "name": str(
+                            (rejected_tool_call.get("function") or {}).get("name") or "invalid"
+                        ),
+                        "content": canonical_json({"ok": False, "error": correction}),
+                    }
+                    messages.extend([assistant_error_message, correction_message])
+                    transcript.append(correction_message)
+                    chain_delta_messages = [correction_message]
+                else:
+                    messages.append({"role": "assistant", "content": response.content})
+                    correction_message = {"role": "user", "content": correction}
+                    messages.append(correction_message)
+                    transcript.append(correction_message)
+                    chain_delta_messages = [correction_message]
                 self._emit("protocol_retry", step=step, error=str(exc))
                 continue
 
@@ -1121,22 +1156,21 @@ class AgentRunner:
         )
         review_roles = [
             (
-                "Candidate matrix investigator",
-                "Enumerate every candidate present in the evidence. For each exact constraint in "
-                "the question, label the candidate verified, unverified, or contradicted and cite "
-                "the supporting public source. Exact numeric clues require direct matching data.",
+                "Candidate matrix and independent solver",
+                "Enumerate every plausible answer-type-valid candidate in the evidence and solve "
+                "the question independently. For each clue, distinguish directly supported, "
+                "inferred, unknown, and contradicted. Missing source text is unknown, not a "
+                "contradiction. Rank candidates comparatively and return your single best concrete "
+                "answer as a final JSON action even when some clues remain unresolved.",
             ),
             (
-                "Adversarial falsifier",
-                "Assume the leading candidate is wrong. Find minimal-pair alternatives and expose "
-                "unsupported leaps involving dates, aliases, percentages, nationality, causal "
-                "order, or answer type. Reject any candidate that fails even one required clue.",
-            ),
-            (
-                "Independent public-web solver",
-                "Solve the question independently using ordinary public sources where available. "
-                "Build a constraint-by-constraint proof and distinguish direct evidence from "
-                "memory or inference. Return the exact requested answer type.",
+                "Comparative adversarial auditor",
+                "Challenge the leading candidate with minimal-pair alternatives and concrete "
+                "objections involving dates, aliases, units, identity, ordering, and answer type. "
+                "Classify each objection as contradiction, unresolved evidence, source-quality "
+                "concern, identity mismatch, or answer-type mismatch. Source silence is not "
+                "disproof, and skepticism has no veto. Compare alternatives and return the single "
+                "best concrete answer as a final JSON action.",
             ),
         ]
         review_count = min(len(review_roles), max(0, request_budget - 1))
@@ -1145,10 +1179,17 @@ class AgentRunner:
                 "system": (
                     "You are an independent reviewer for an audited public-web research task. Do "
                     "not look for benchmark dumps, canaries, leaked questions, or reference "
-                    "answers. Treat every candidate as unproven until every exact qualifier is "
-                    "checked. Use public-web research if available and never fabricate citations."
+                    "answers. Use public-web research if available and never fabricate citations. "
+                    "This is a forced-answer task: return exactly one final JSON action with a "
+                    "concrete answer of the requested type. Unresolved evidence lowers confidence "
+                    "but never permits an abstention or meta-answer."
                 ),
-                "query": f"Role: {role}\n\n{task}",
+                "query": (
+                    f"Role: {role}\n\n{task}\n\nReturn exactly: "
+                    '{"action":"final","explanation":"comparative evidence audit",'
+                    '"exact_answer":"short concrete answer","confidence":50,'
+                    '"citations":["https://public-source.example/"]}'
+                ),
                 "context": context,
             }
             for role, task in review_roles[:review_count]
@@ -1178,10 +1219,15 @@ class AgentRunner:
                 "system": (
                     "You are the final adjudicator for an audited public-web research task. Do not "
                     "look for benchmark dumps, canaries, leaked questions, or reference answers. "
-                    "Independently compare all candidates. A candidate is invalid if any exact "
-                    "numeric, date, identity, ordering, nationality, wording, or answer-type "
-                    "constraint is unverified or contradicted. Return exactly one JSON object and "
-                    "no markdown."
+                    "Independently compare all candidates. Distinguish directly supported, "
+                    "inferred, unknown, and contradicted clues. Missing proof is unknown, not "
+                    "false; only affirmative, reliable, scope-aligned conflicting evidence is a "
+                    "contradiction. Preserve the requested answer type. This is a forced-answer "
+                    "task: select one concrete candidate even when evidence is incomplete, and "
+                    "express uncertainty only through calibrated confidence and explanation. "
+                    "Never return unknown, insufficient evidence, not verifiable, cannot determine, "
+                    "or any other abstention or meta-answer. Return exactly one JSON object and no "
+                    "markdown."
                 ),
                 "query": (
                     "Return this exact schema: "
@@ -1189,7 +1235,8 @@ class AgentRunner:
                     '"exact_answer":"short answer","confidence":0,'
                     '"citations":["https://public-source.example/"]}. '
                     "Do not merely follow the latest candidate or majority vote. Resolve conflicts "
-                    "against direct evidence and return the best defensible exact answer now."
+                    "against direct evidence, but do not let universal skepticism veto the "
+                    "best-supported candidate. Return the best concrete exact answer now."
                 ),
                 "context": adjudication_context,
             }
@@ -1201,22 +1248,182 @@ class AgentRunner:
         result = (
             adjudication[0] if adjudication else {"ok": False, "error": "empty adjudicator result"}
         )
+        attempted = review_count + 1
         result = {
             **result,
-            "attempted": review_count + 1,
+            "attempted": attempted,
             "review_request_ids": [item.get("request_id") for item in reviews],
             "reviews": reviews,
         }
-        if not result.get("ok"):
-            return None, result
-        try:
-            action = parse_json_action(str(result.get("content") or ""))
-            if action.action != "final":
-                raise ProtocolError("external finalizer returned a non-final action")
-        except ProtocolError as exc:
-            result = {**result, "ok": False, "error": str(exc)}
-            return None, result
+        action: AgentAction | None = None
+        if result.get("ok"):
+            try:
+                action = parse_json_action(str(result.get("content") or ""))
+                if action.action != "final":
+                    raise ProtocolError("external finalizer returned a non-final action")
+                self._require_concrete_final(action)
+            except ProtocolError as exc:
+                result = {**result, "ok": False, "error": str(exc)}
+
+        remaining_budget = request_budget - attempted
+        if action is None or not result.get("ok"):
+            repair_result: dict[str, Any] | None = None
+            if remaining_budget > 0:
+                candidates = self._concrete_review_actions(reviews)
+                allowed_answers = list(
+                    dict.fromkeys(
+                        str(candidate.payload.get("exact_answer") or "").strip()
+                        for candidate in candidates
+                        if str(candidate.payload.get("exact_answer") or "").strip()
+                    )
+                )
+                repair_requests = [
+                    {
+                        "system": (
+                            "You repair forced-choice outputs for a public-web research task. The "
+                            "prior adjudicator abstained or violated the final schema. Return one "
+                            "concrete answer of the requested type. Missing evidence is not a "
+                            "reason to abstain. Return exactly one final JSON action and no markdown."
+                        ),
+                        "query": (
+                            "Repair the prior adjudication. Choose the best concrete answer now. "
+                            + (
+                                "Prefer one of these independently proposed exact answers unless "
+                                f"the evidence directly contradicts all of them: {canonical_json(allowed_answers)}. "
+                                if allowed_answers
+                                else ""
+                            )
+                            + 'Return {"action":"final","explanation":"brief comparative reason",'
+                            '"exact_answer":"short concrete answer","confidence":50,'
+                            '"citations":["https://public-source.example/"]}.'
+                        ),
+                        "context": canonical_json(
+                            {
+                                "evidence_bundle": truncate_middle(context, 100_000),
+                                "reviews": [
+                                    truncate_middle(str(item.get("content") or ""), 16_000)
+                                    for item in reviews
+                                ],
+                                "invalid_adjudication": truncate_middle(
+                                    str(result.get("content") or ""), 12_000
+                                ),
+                            }
+                        ),
+                    }
+                ]
+                repairs = await self.external_model.ask_many(
+                    repair_requests,
+                    request_namespace=request_namespace + ":finalization-repair",
+                )
+                repair_result = (
+                    repairs[0] if repairs else {"ok": False, "error": "empty repair result"}
+                )
+                attempted += 1
+                result = {
+                    **result,
+                    "attempted": attempted,
+                    "repair_request_id": repair_result.get("request_id"),
+                    "repair": repair_result,
+                }
+                if repair_result.get("ok"):
+                    try:
+                        repaired_action = parse_json_action(str(repair_result.get("content") or ""))
+                        if repaired_action.action != "final":
+                            raise ProtocolError("external repair returned a non-final action")
+                        self._require_concrete_final(repaired_action)
+                        action = repaired_action
+                        result = {
+                            **result,
+                            "ok": True,
+                            "content": str(repair_result.get("content") or ""),
+                            "error": None,
+                        }
+                    except ProtocolError as exc:
+                        result = {**result, "error": str(exc)}
+
+            if action is None or self._is_abstention_answer(
+                str(action.payload.get("exact_answer") or "")
+            ):
+                fallback = self._best_review_fallback(reviews, context=context)
+                if fallback is None:
+                    return None, {**result, "ok": False}
+                action = fallback
+                result = {
+                    **result,
+                    "ok": True,
+                    "content": canonical_json({"controller_fallback": action.payload}),
+                    "controller_fallback": True,
+                    "error": None,
+                }
         return action, result
+
+    @staticmethod
+    def _is_abstention_answer(answer: str) -> bool:
+        normalized = re.sub(r"\s+", " ", answer.strip())
+        return not normalized or bool(_ABSTENTION_ANSWER.match(normalized))
+
+    @classmethod
+    def _require_concrete_final(cls, action: AgentAction) -> None:
+        answer = str(action.payload.get("exact_answer") or "")
+        if cls._is_abstention_answer(answer):
+            raise ProtocolError("final requires one concrete answer; abstentions are invalid")
+
+    @classmethod
+    def _concrete_review_actions(cls, reviews: list[dict[str, Any]]) -> list[AgentAction]:
+        actions: list[AgentAction] = []
+        for review in reviews:
+            if not review.get("ok"):
+                continue
+            try:
+                action = parse_json_action(str(review.get("content") or ""))
+                if action.action != "final":
+                    continue
+                cls._require_concrete_final(action)
+            except ProtocolError:
+                continue
+            actions.append(action)
+        return actions
+
+    @classmethod
+    def _best_review_fallback(
+        cls,
+        reviews: list[dict[str, Any]],
+        *,
+        context: str,
+    ) -> AgentAction | None:
+        candidates = cls._concrete_review_actions(reviews)
+        if not candidates:
+            return None
+        candidates.sort(
+            key=lambda candidate: float(candidate.payload.get("confidence") or 0),
+            reverse=True,
+        )
+        chosen = candidates[0]
+        citations = [
+            str(item)
+            for item in chosen.payload.get("citations") or []
+            if isinstance(item, str) and item.startswith(("http://", "https://"))
+        ]
+        if not citations:
+            citations = list(dict.fromkeys(_PUBLIC_URL.findall(context)))[:4]
+        try:
+            confidence = float(chosen.payload.get("confidence") or 0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        return AgentAction(
+            action="final",
+            payload={
+                "explanation": (
+                    "The final adjudicator did not satisfy the forced-choice contract. The "
+                    "controller selected the highest-confidence concrete recommendation from the "
+                    "independent comparative reviews; unresolved evidence lowers confidence but "
+                    "does not convert the answer into an abstention."
+                ),
+                "exact_answer": str(chosen.payload.get("exact_answer") or "").strip(),
+                "confidence": min(max(confidence, 0.0), 70.0),
+                "citations": citations,
+            },
+        )
 
     async def _automatic_external_consultations(
         self,
@@ -1292,6 +1499,8 @@ class AgentRunner:
         tool_calls = raw_message.get("tool_calls")
         if protocol in {"tools", "auto"} and isinstance(tool_calls, list) and tool_calls:
             action = action_from_tool_call(tool_calls[0])
+            if action.action == "final":
+                self._require_concrete_final(action)
             # The harness executes exactly one action per turn. Retaining only
             # the first native tool call also prevents the next API request from
             # containing unanswered sibling tool calls, which strict OpenAI-style
@@ -1308,6 +1517,8 @@ class AgentRunner:
             if not force_final:
                 raise
             action = self._plain_final_action(str(response.content or ""))
+        if action.action == "final":
+            self._require_concrete_final(action)
         return action, {"role": "assistant", "content": response.content}
 
     @staticmethod

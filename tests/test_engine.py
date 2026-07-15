@@ -132,3 +132,47 @@ async def test_engine_end_to_end_with_synthetic_dataset(monkeypatch, tmp_path: P
     public_summary = json.loads((run_dir / "public" / "summary.json").read_text())
     assert public_summary["cost_breakdown_usd"]["model"] == pytest.approx(0.002)
     assert public_summary["cost_breakdown_usd"]["grader"] == pytest.approx(0.0002)
+
+
+@pytest.mark.asyncio
+async def test_engine_runs_a_locked_heldout_range(monkeypatch, tmp_path: Path) -> None:
+    import browsecomp250.run.engine as engine_module
+
+    cache_dir = tmp_path / "cache"
+    _write_synthetic_dataset(cache_dir / "browse_comp_test_set.csv")
+    repository_root = Path(__file__).parents[1]
+    config = AppConfig(
+        run=RunConfig(
+            name="fixture-heldout-run",
+            output_dir=tmp_path / "runs",
+            concurrency=2,
+            shuffle=False,
+        ),
+        dataset=DatasetConfig(
+            source_url="https://example.test/encrypted.csv",
+            cache_dir=cache_dir,
+            subset_indices_path=repository_root / "data" / "subset_indices.json",
+        ),
+        model=ModelConfig(api_base="https://model.test/v1", api_key="key", model="star"),
+        search=SearchConfig(provider="searxng", cache_path=tmp_path / "search.sqlite3"),
+        browser=BrowserConfig(cache_path=tmp_path / "pages.sqlite3", block_private_networks=False),
+        agent=AgentConfig(),
+        grader=GraderConfig(mode="deterministic"),
+        report=ReportConfig(bootstrap_samples=200),
+    )
+
+    monkeypatch.setattr(engine_module, "AgentRunner", _FakeAgentRunner)
+    monkeypatch.setattr(engine_module, "OpenAICompatibleClient", _FakeClosable)
+    monkeypatch.setattr(engine_module, "create_search_provider", lambda config: _FakeClosable())
+    monkeypatch.setattr(engine_module, "PageFetcher", _FakeClosable)
+    monkeypatch.setattr(engine_module, "Grader", _FakeGrader)
+
+    summary = await BenchmarkEngine(config).run(start=5, limit=2)
+    run_dir = tmp_path / "runs" / "fixture-heldout-run"
+    records = [
+        json.loads(line) for line in (run_dir / "private" / "trials.jsonl").read_text().splitlines()
+    ]
+    lock = json.loads((run_dir / "run.lock.json").read_text())
+    assert summary["n_scored"] == 2
+    assert [record["subset_rank"] for record in records] == [5, 6]
+    assert lock["selection"] == {"start": 5, "limit": 2}
