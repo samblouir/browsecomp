@@ -93,13 +93,13 @@ agent:
   enable_open_many: true
   max_batch_size: 7
   automatic_external_after_search_calls: 8
-  automatic_external_requests: 4
+  automatic_external_requests: 1
   automatic_page_inspection_after_search_actions: 2
   automatic_page_inspection_count: 4
   automatic_page_inspection_max_chars: 10000
   max_consecutive_duplicate_actions: 3
   automatic_finalization_rescue_after_rejections: 2
-  automatic_finalization_rescue_after_seconds: 900
+  automatic_finalization_rescue_after_seconds: 0
   system_prompt_path: prompts/star_browsecomp_system.md
 
 external_model:
@@ -113,9 +113,9 @@ external_model:
   temperature: 0.7
   top_p: 0.95
   max_output_tokens: 16384
-  max_calls_per_task: 8
+  max_calls_per_task: 4
   max_batch_size: 4
-  max_concurrency: 8
+  max_concurrency: 4
   timeout_seconds: 900
   max_retries: 2
   agent_api_base: "${BC250_EXTERNAL_AGENT_API_BASE:-http://127.0.0.1:8000/agent/v1}"

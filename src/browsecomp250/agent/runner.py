@@ -2163,7 +2163,9 @@ class AgentRunner:
                 "three viable entities until a constraint-by-constraint ledger distinguishes "
                 "them. For every candidate and every clue, label direct support, inference, "
                 "unknown, or contradiction. Propose the answer, primary sources or URLs, and "
-                "high-information follow-up queries. State uncertainty explicitly.",
+                "high-information follow-up queries. Before concluding, perform one adversarial "
+                "minimal-pair check against the strongest alternative, including dates, negation, "
+                "causal ordering, aliases, units, and answer type. State uncertainty explicitly.",
             ),
             (
                 "Adversarial constraint auditor",

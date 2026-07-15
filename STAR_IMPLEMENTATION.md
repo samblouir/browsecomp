@@ -93,16 +93,18 @@ model suggestions cannot redirect this mode away from Star-2. The older
 `mode: broker` adapter remains available to deliberately separate comparison
 profiles; it is not selected by `configs/star-dev-baseline.yaml`.
 
-The Star profiles also set `automatic_external_after_search_calls: 8` and
-`automatic_external_requests: 4`. Once per item, the controller runs an
-independent candidate investigator, adversarial constraint auditor, and search
-strategy specialist plus an independent final-answer reviewer concurrently.
-Their outputs are embedded in the current search tool result, preserving the
-same assistant/tool continuation and stable response-chain history. Public URLs
-proposed by those reviews are opened automatically and attached for factual
-checking. A broker failure does not discard the successful search evidence.
-Exhausting the external-help budget does not force the main agent to finalize
-while browsing budget remains.
+The Star development profile sets `automatic_external_after_search_calls: 8`
+and `automatic_external_requests: 1`. Once per item, the controller runs one
+combined candidate investigator that also performs a minimal-pair adversarial
+check. The parent can request another focused helper only when a concrete
+contradiction, identity ambiguity, or answer-type dispute remains. This avoids
+launching four overlapping full browsing agents on routine items. The hard
+per-item helper budget is four. Helper output is embedded in the current search
+tool result, preserving the same assistant/tool continuation and stable
+response-chain history. Public URLs proposed by the helper are opened
+automatically and attached for factual checking. A helper failure does not
+discard successful search evidence, and exhausting help does not force the main
+agent to finalize while browsing budget remains.
 
 After every two consecutive successful search actions, the controller opens up
 to four top URLs in round-robin query order. Failed or sparse direct HTTP
