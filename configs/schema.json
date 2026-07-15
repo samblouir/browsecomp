@@ -285,6 +285,15 @@
           "title": "Enabled",
           "type": "boolean"
         },
+        "mode": {
+          "default": "broker",
+          "enum": [
+            "broker",
+            "agent"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
         "api_url": {
           "default": "http://127.0.0.1:8000/api/external-model-requests",
           "title": "Api Url",
@@ -373,6 +382,44 @@
           "maximum": 10,
           "minimum": 0,
           "title": "Max Retries",
+          "type": "integer"
+        },
+        "agent_api_base": {
+          "default": "http://127.0.0.1:8000/agent/v1",
+          "title": "Agent Api Base",
+          "type": "string"
+        },
+        "agent_api_key": {
+          "default": "",
+          "title": "Agent Api Key",
+          "type": "string"
+        },
+        "agent_allow_empty_api_key": {
+          "default": false,
+          "title": "Agent Allow Empty Api Key",
+          "type": "boolean"
+        },
+        "agent_model": {
+          "default": "frontierrl/star-2",
+          "title": "Agent Model",
+          "type": "string"
+        },
+        "agent_response_chain": {
+          "default": true,
+          "title": "Agent Response Chain",
+          "type": "boolean"
+        },
+        "agent_max_steps": {
+          "default": 80,
+          "minimum": 1,
+          "title": "Agent Max Steps",
+          "type": "integer"
+        },
+        "agent_max_denoising_steps": {
+          "default": 48,
+          "maximum": 48,
+          "minimum": 1,
+          "title": "Agent Max Denoising Steps",
           "type": "integer"
         }
       },

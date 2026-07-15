@@ -133,6 +133,7 @@ class SearchConfig(StrictConfigModel):
 
 class ExternalModelConfig(StrictConfigModel):
     enabled: bool = False
+    mode: Literal["broker", "agent"] = "broker"
     api_url: str = "http://127.0.0.1:8000/api/external-model-requests"
     admin_token: str = ""
     default_provider: Literal[
@@ -161,6 +162,13 @@ class ExternalModelConfig(StrictConfigModel):
     max_concurrency: int = Field(default=4, ge=1, le=16)
     timeout_seconds: float = Field(default=900, gt=0)
     max_retries: int = Field(default=2, ge=0, le=10)
+    agent_api_base: str = "http://127.0.0.1:8000/agent/v1"
+    agent_api_key: str = ""
+    agent_allow_empty_api_key: bool = False
+    agent_model: str = "frontierrl/star-2"
+    agent_response_chain: bool = True
+    agent_max_steps: int = Field(default=80, ge=1)
+    agent_max_denoising_steps: int = Field(default=48, ge=1, le=48)
 
     @field_validator("api_url")
     @classmethod
@@ -168,6 +176,14 @@ class ExternalModelConfig(StrictConfigModel):
         value = value.rstrip("/")
         if not value:
             raise ValueError("external_model.api_url is required")
+        return value
+
+    @field_validator("agent_api_base")
+    @classmethod
+    def normalize_agent_api_base(cls, value: str) -> str:
+        value = value.rstrip("/")
+        if not value:
+            raise ValueError("external_model.agent_api_base is required")
         return value
 
 

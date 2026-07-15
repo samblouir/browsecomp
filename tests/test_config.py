@@ -32,7 +32,11 @@ model:
 search: {provider: searxng}
 browser: {}
 agent: {}
-external_model: {enabled: true, admin_token: external-secret}
+external_model:
+  enabled: true
+  mode: agent
+  admin_token: external-secret
+  agent_api_key: star-agent-secret
 grader: {mode: deterministic}
 report: {}
 """
@@ -64,7 +68,11 @@ model:
 search: {provider: searxng}
 browser: {}
 agent: {}
-external_model: {enabled: true, admin_token: external-secret}
+external_model:
+  enabled: true
+  mode: agent
+  admin_token: external-secret
+  agent_api_key: star-agent-secret
 grader: {mode: deterministic}
 report: {}
 """
@@ -72,6 +80,8 @@ report: {}
     public = load_config(config).public_dict()
     assert public["model"]["api_key"] == "<redacted>"
     assert public["external_model"]["admin_token"] == "<redacted>"
+    assert public["external_model"]["agent_api_key"] == "<redacted>"
+    assert public["external_model"]["agent_model"] == "frontierrl/star-2"
     assert public["model"]["max_output_tokens"] == 16384
     assert public["model"]["allow_empty_api_key"] is False
 

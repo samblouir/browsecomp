@@ -30,8 +30,9 @@ Concurrent benchmark engine
         │       ├── Serper
         │       └── SearXNG
         │
-        ├──► Production external-model broker
-        │       ├── caller-selected consultations
+        ├──► External-help backend
+        │       ├── isolated Star-2 tool agents for Star campaign configs
+        │       ├── generic production-broker adapter for comparison configs
         │       └── automatic candidate, adversarial, and strategy reviews
         │
         ├──► Page fetcher
@@ -63,6 +64,7 @@ src/browsecomp250/
 ├── report/      aggregation, HTML/CSV/JSON, sanitization
 ├── run/         orchestration, locking, resumability, storage
 ├── search/      search-provider adapters
+├── agent_external.py  Star-2 tool-agent external-help backend
 ├── external.py  production external-model broker client
 ├── cache.py     SQLite request/response cache
 ├── cli.py       operator interface

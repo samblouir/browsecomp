@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from ..agent import AgentRunner
+from ..agent_external import AgentExternalModelBroker
 from ..browser import PageFetcher
 from ..config import AppConfig
 from ..constants import SUBSET_INDICES_SHA256, __version__
@@ -65,6 +66,13 @@ class BenchmarkEngine:
             elif self.config.grader.api_key and is_placeholder_secret(self.config.grader.api_key):
                 problems.append("grader API key is a placeholder")
 
+        if self.config.external_model.enabled and self.config.external_model.mode == "agent":
+            agent_key = self.config.external_model.agent_api_key
+            if not agent_key and not self.config.external_model.agent_allow_empty_api_key:
+                problems.append("external Star agent API key is empty")
+            elif agent_key and is_placeholder_secret(agent_key):
+                problems.append("external Star agent API key is a placeholder")
+
         if problems:
             raise RuntimeError(
                 "Benchmark credential preflight failed before launch: " + "; ".join(problems)
@@ -83,6 +91,9 @@ class BenchmarkEngine:
             "grader_key_fingerprint": self._secret_fingerprint(self.config.grader.api_key),
             "external_model_admin_token_fingerprint": self._secret_fingerprint(
                 self.config.external_model.admin_token
+            ),
+            "external_agent_api_key_fingerprint": self._secret_fingerprint(
+                self.config.external_model.agent_api_key
             ),
             "search_key_fingerprint": self._secret_fingerprint(
                 self.config.search.selected_api_key()
@@ -103,6 +114,7 @@ class BenchmarkEngine:
                 "external_model_admin_token": replay_material[
                     "external_model_admin_token_fingerprint"
                 ],
+                "external_agent_api_key": replay_material["external_agent_api_key_fingerprint"],
             },
         }
         selection = {"start": start, "limit": limit}
@@ -128,6 +140,7 @@ class BenchmarkEngine:
                 "external_model_admin_token": replay_material[
                     "external_model_admin_token_fingerprint"
                 ],
+                "external_agent_api_key": replay_material["external_agent_api_key_fingerprint"],
             },
             "environment": environment_metadata(),
             "git": git_metadata(Path.cwd()),
@@ -188,7 +201,16 @@ class BenchmarkEngine:
         model_client = OpenAICompatibleClient(settings_from_model_config(self.config.model))
         search_provider = create_search_provider(self.config.search)
         page_fetcher = PageFetcher(self.config.browser)
-        external_model_broker = ExternalModelBroker(self.config.external_model)
+        if self.config.external_model.mode == "agent":
+            external_model_broker = AgentExternalModelBroker(
+                self.config.external_model,
+                self.config.agent,
+                self.config.browser,
+                search_provider,
+                page_fetcher,
+            )
+        else:
+            external_model_broker = ExternalModelBroker(self.config.external_model)
         grader = Grader(self.config.grader)
         semaphore = asyncio.Semaphore(self.config.run.concurrency)
         failures: list[str] = []
@@ -346,7 +368,7 @@ class BenchmarkEngine:
         model_client: OpenAICompatibleClient,
         search_provider: Any,
         page_fetcher: PageFetcher,
-        external_model_broker: ExternalModelBroker,
+        external_model_broker: ExternalModelBroker | AgentExternalModelBroker,
         grader: Grader,
         event_sink: Any | None = None,
     ) -> TrialRecord:

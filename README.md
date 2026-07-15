@@ -148,8 +148,10 @@ The `headline` command refuses configurations that weaken major minimum budgets,
 
 All providers are normalized to the same internal result schema. Fix the provider, region, language, safe-search setting, result count, and evaluation dates across compared systems.
 
-The Star configs fix search to the Brave API and can expose the caller-owned
-`ask_external_model` tool through the production external-model broker. See
+The Star configs fix search to the Brave API and expose the caller-owned
+`ask_external_model` tool through an isolated Star-2 agent that can use the
+same Brave, page-open, and find tools. The generic production-broker adapter
+remains available for comparison configs. See
 [`STAR_IMPLEMENTATION.md`](STAR_IMPLEMENTATION.md) for search isolation,
 external-call budgets, and live verification details.
 

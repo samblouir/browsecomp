@@ -104,6 +104,7 @@ agent:
 
 external_model:
   enabled: ${BC250_EXTERNAL_MODEL_ENABLED:-true}
+  mode: agent
   api_url: "${BC250_EXTERNAL_MODEL_API_URL:-http://127.0.0.1:8000/api/external-model-requests}"
   admin_token: "${BC250_EXTERNAL_MODEL_ADMIN_TOKEN:-}"
   default_provider: "${BC250_EXTERNAL_MODEL_PROVIDER:-chatgpt}"
@@ -117,6 +118,13 @@ external_model:
   max_concurrency: 8
   timeout_seconds: 900
   max_retries: 2
+  agent_api_base: "${BC250_EXTERNAL_AGENT_API_BASE:-http://127.0.0.1:8000/agent/v1}"
+  agent_api_key: "${BC250_MODEL_API_KEY:-frontierrl-public}"
+  agent_allow_empty_api_key: false
+  agent_model: frontierrl/star-2
+  agent_response_chain: true
+  agent_max_steps: 80
+  agent_max_denoising_steps: 48
 
 grader:
   mode: official_llm

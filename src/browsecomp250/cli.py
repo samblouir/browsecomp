@@ -171,6 +171,20 @@ def doctor(
             else ("explicitly allowed without a key" if cfg.model.allow_empty_api_key else "empty"),
         )
     )
+    if cfg.external_model.enabled and cfg.external_model.mode == "agent":
+        helper_key = cfg.external_model.agent_api_key
+        helper_key_usable = bool(helper_key) and not is_placeholder_secret(helper_key)
+        checks.append(
+            (
+                "External Star agent",
+                helper_key_usable or cfg.external_model.agent_allow_empty_api_key,
+                (
+                    f"{cfg.external_model.agent_model}; placeholder credential"
+                    if helper_key and not helper_key_usable
+                    else f"{cfg.external_model.agent_model}; native tools"
+                ),
+            )
+        )
     search_key = cfg.search.selected_api_key()
     search_key_usable = bool(search_key) and not is_placeholder_secret(search_key)
     checks.append(

@@ -67,13 +67,14 @@ environment override.
 
 ## External consultation
 
-`ask_external_model` is a caller-owned native tool in this evaluator. It uses
-the production `/api/external-model-requests` broker, so provider credentials,
-provider selection, request records, and execution remain centralized. The
-tool accepts either one `query` or `requests` containing up to four independent
-queries; batched requests run concurrently. Defaults are temperature `0.7`,
-top-p `0.95`, and 16,384 output tokens, with a hard 16,384-token minimum and
-32,768-token maximum.
+`ask_external_model` is a caller-owned native tool in this evaluator. The Star
+development profile fixes every helper request to `frontierrl/star-2` through
+the Agent API. Each helper is a real isolated tool agent: it can search Brave,
+open pages, find text, take notes, and finalize. It cannot call
+`ask_external_model` recursively. The tool accepts either one `query` or
+`requests` containing up to four independent queries; batched requests run
+concurrently. Defaults are temperature `0.7`, top-p `0.95`, 16,384 output
+tokens per turn, and at most 48 denoising steps.
 
 External answers are inserted as a normal tool result and retained in the
 private benchmark transcript. Star is instructed to treat them as independent
@@ -82,12 +83,15 @@ per-task budget and request IDs are included in audit output. Configure:
 
 ```bash
 export BC250_EXTERNAL_MODEL_ENABLED=true
-export BC250_EXTERNAL_MODEL_API_URL=http://127.0.0.1:8000/api/external-model-requests
-export BC250_EXTERNAL_MODEL_ADMIN_TOKEN="${STATUS_ADMIN_TOKEN:-}"
+export BC250_EXTERNAL_AGENT_API_BASE=http://127.0.0.1:8000/agent/v1
+export BC250_MODEL_API_KEY='<account-bound-key>'
 ```
 
-The admin token is optional for an explicitly enabled loopback broker and is
-redacted from public run locks when supplied.
+The helper key is redacted from public run locks and recorded only as a short
+one-way fingerprint in private reproducibility metadata. Incoming provider or
+model suggestions cannot redirect this mode away from Star-2. The older
+`mode: broker` adapter remains available to deliberately separate comparison
+profiles; it is not selected by `configs/star-dev-baseline.yaml`.
 
 The Star profiles also set `automatic_external_after_search_calls: 8` and
 `automatic_external_requests: 4`. Once per item, the controller runs an
