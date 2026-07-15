@@ -30,6 +30,8 @@ The headline profile uses exactly one attempt per item. Multiple-attempt profile
 - No hidden human intervention.
 - No access to the reference answer.
 - No access to the benchmark CSV or run-private artifacts through tools.
+- Response-chain transport retries reuse the same request ID; Star profiles
+  permit ten retries so connection outages do not duplicate a model turn.
 
 ## Browsing tools
 

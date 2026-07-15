@@ -1,5 +1,5 @@
 run:
-  name: browsecomp250-star7-dev-assisted-v4-20260715
+  name: browsecomp250-star7-dev-assisted-v5-20260715
   output_dir: runs
   seed: 20260715
   concurrency: 5
@@ -28,7 +28,7 @@ model:
   temperature: 0.3
   max_output_tokens: 16384
   timeout_seconds: 360
-  max_retries: 4
+  max_retries: 10
   response_chain: true
   input_price_per_million: ${BC250_MODEL_INPUT_PRICE_PER_MILLION:-0}
   output_price_per_million: ${BC250_MODEL_OUTPUT_PRICE_PER_MILLION:-0}
