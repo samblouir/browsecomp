@@ -1016,7 +1016,7 @@ async def test_agent_executes_structured_external_search_strategy(tmp_path: Path
             max_steps=4,
             max_search_calls=6,
             automatic_external_after_search_calls=2,
-            automatic_external_requests=3,
+            automatic_external_requests=1,
             automatic_page_inspection_after_search_actions=0,
             max_batch_size=4,
         ),
@@ -1036,7 +1036,7 @@ async def test_agent_executes_structured_external_search_strategy(tmp_path: Path
     assert outcome.status == "completed"
     assert outcome.errors == []
     assert outcome.search_calls == 4
-    assert outcome.external_model_calls == 3
+    assert outcome.external_model_calls == 1
     assert outcome.page_opens == 3
     assert search.queries == [
         "first clue",
@@ -1045,7 +1045,7 @@ async def test_agent_executes_structured_external_search_strategy(tmp_path: Path
         "entity B attribution source",
     ]
     requests, _ = broker.calls[0]
-    strategy_request = requests[2]
+    strategy_request = requests[0]
     assert "strongest alternative" in strategy_request["query"]
     tool_results = [
         row["content"]

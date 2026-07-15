@@ -32,6 +32,9 @@ _SEARCH_DATE_RANGE = re.compile(
     flags=re.I,
 )
 _SEARCH_TOKEN = re.compile(r"[a-z0-9]+", flags=re.I)
+_STRATEGY_PLACEHOLDER_QUERY = re.compile(
+    r"^(?:query|search)(?:\s+(?:query|search))?\s*\d+$", flags=re.I
+)
 _LINK_STOPWORDS = frozenset(
     {
         "a",
@@ -1354,6 +1357,8 @@ class AgentRunner:
         accepted: list[str] = []
         comparison_queries = list(prior_queries)
         for query in candidates:
+            if _STRATEGY_PLACEHOLDER_QUERY.fullmatch(query.strip()):
+                continue
             if cls._search_query_is_redundant(query, comparison_queries):
                 continue
             accepted.append(query)
@@ -2157,6 +2162,23 @@ class AgentRunner:
             context += f"\n\nSaved research notes:\n{saved_notes}"
         roles = [
             (
+                "Search strategy specialist",
+                "Do not inherit the current leading hypothesis or treat repeated mentions as "
+                "support. Independently identify three viable underlying entities, including a "
+                "strongest alternative as a minimal pair, then use public-web tools to test the single most "
+                "discriminating clue before designing seven meaningfully different searches. The "
+                "queries must discriminate among candidates and resolve the requested answer "
+                "relation. Include broad entity-plus-history/origins/attribution routes as well as "
+                "primary-record or source-language routes. For a historical attribution, put a "
+                "broad subject history or origins query first; do not lead with answer-shaped "
+                "wording such as 'first person credited.' Use one entity per query, no OR chains, "
+                "and at most twelve terms per query. Do not create novelty by changing only quotes, "
+                "punctuation, or date ranges. In the analysis, state what evidence would falsify "
+                "each candidate. Return exactly one JSON object with schema "
+                '{"analysis":"brief candidate and falsification diagnosis","entity_candidates":['
+                '"candidate"],"queries":["query 1","query 2"]} and no markdown.',
+            ),
+            (
                 "Independent candidate investigator",
                 "Resolve the underlying entity before proposing the exact answer. Weight the most "
                 "discriminating clues first, and reject any entity affirmatively contradicted by "
@@ -2174,21 +2196,6 @@ class AgentRunner:
                 "ordering, aliases, units, and minimal-pair alternatives. Identify the strongest "
                 "falsification tests and what evidence would resolve them. Do not let one candidate "
                 "win by repeated mentions; compare clue coverage in an explicit candidate matrix.",
-            ),
-            (
-                "Search strategy specialist",
-                "Do not inherit the current leading hypothesis. Identify up to three viable "
-                "underlying entities, including the strongest alternative, and design seven "
-                "meaningfully different searches that discriminate among them and resolve the "
-                "requested answer relation. Include broad entity-plus-history/origins/attribution "
-                "routes as well as primary-record or source-language routes. For a historical "
-                "attribution, put a broad subject history or origins query first; do not lead with "
-                "answer-shaped wording such as 'first person credited.' Put the highest-yield query "
-                "for the unresolved answer relation first. Use one entity per query, no OR chains, "
-                "and at most twelve terms per query. Do not create novelty by changing only "
-                "quotes, punctuation, or date ranges. Return exactly one JSON "
-                'object with schema {"analysis":"brief diagnosis","entity_candidates":['
-                '"candidate"],"queries":["query 1","query 2"]} and no markdown.',
             ),
             (
                 "Independent final-answer reviewer",

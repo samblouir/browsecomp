@@ -95,8 +95,10 @@ profiles; it is not selected by `configs/star-dev-baseline.yaml`.
 
 The Star development profile sets `automatic_external_after_search_calls: 8`
 and `automatic_external_requests: 1`. Once per item, the controller runs one
-combined candidate investigator that also performs a minimal-pair adversarial
-check. The parent can request another focused helper only when a concrete
+strategy-first independent investigator that identifies candidate entities,
+performs a minimal-pair adversarial check, and returns discriminating search
+routes. The controller executes those routes and opens their evidence. The
+parent can request another focused helper only when a concrete
 contradiction, identity ambiguity, or answer-type dispute remains. This avoids
 launching four overlapping full browsing agents on routine items. The hard
 per-item helper budget is four. Helper output is embedded in the current search
