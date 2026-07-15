@@ -109,6 +109,11 @@
           "title": "Max Consecutive Duplicate Actions",
           "type": "integer"
         },
+        "automatic_external_strategy_recovery": {
+          "default": true,
+          "title": "Automatic External Strategy Recovery",
+          "type": "boolean"
+        },
         "automatic_finalization_rescue_after_rejections": {
           "default": 0,
           "maximum": 10,

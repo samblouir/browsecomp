@@ -222,6 +222,7 @@ class AgentConfig(StrictConfigModel):
     automatic_page_inspection_count: int = Field(default=4, ge=1, le=20)
     automatic_page_inspection_max_chars: int = Field(default=10000, ge=1000, le=30000)
     max_consecutive_duplicate_actions: int = Field(default=3, ge=1, le=10)
+    automatic_external_strategy_recovery: bool = True
     automatic_finalization_rescue_after_rejections: int = Field(default=0, ge=0, le=10)
     automatic_finalization_rescue_after_seconds: float = Field(default=0, ge=0)
     system_prompt_path: Path | None = None

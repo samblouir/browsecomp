@@ -106,6 +106,11 @@ automatically and attached for factual checking. A helper failure does not
 discard successful search evidence, and exhausting help does not force the main
 agent to finalize while browsing budget remains.
 
+Semantic duplicate searches are rejected locally with route-change guidance.
+They do not launch a Star-2 strategy agent in this profile; a full browsing
+helper is reserved for evidence investigation or an explicit unresolved
+conflict.
+
 After every two consecutive successful search actions, the controller opens up
 to four top URLs in round-robin query order. Failed or sparse direct HTTP
 retrieval falls back to the configured public text reader after validating the
