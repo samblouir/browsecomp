@@ -53,7 +53,22 @@ class _FakeRunner:
             retrieved_chars=100,
             duration_seconds=0.1,
             usage=Usage(input_tokens=20, output_tokens=10),
-            transcript=[{"role": "user", "content": question}],
+            transcript=[
+                {"role": "user", "content": question},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call-search",
+                            "type": "function",
+                            "function": {
+                                "name": "search_many",
+                                "arguments": '{"queries":["entity history","candidate archive"]}',
+                            },
+                        }
+                    ],
+                },
+            ],
         )
 
 
@@ -91,6 +106,7 @@ async def test_agent_external_broker_forces_star2_tools_and_runs_concurrently() 
     assert all(result["ok"] for result in results)
     assert all(result["model"] == "frontierrl/star-2" for result in results)
     assert results[0]["content"].startswith('{"analysis"')
+    assert results[0]["agent_search_queries"] == ["entity history", "candidate archive"]
     config = _FakeRunner.configurations[0]
     assert config["model"].protocol == "tools"
     assert config["model"].temperature == 0.7
@@ -124,3 +140,30 @@ async def test_agent_external_broker_normalizes_final_action_contract() -> None:
     )
     assert '"action":"final"' in result[0]["content"]
     assert '"exact_answer":"Ada"' in result[0]["content"]
+
+
+def test_agent_external_broker_extracts_executed_search_queries() -> None:
+    transcript = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "search",
+                        "arguments": {"query": "rare collaborator archive"},
+                    }
+                },
+                {
+                    "function": {
+                        "name": "search_many",
+                        "arguments": '{"queries":["candidate history","rare collaborator archive"]}',
+                    }
+                },
+                {"function": {"name": "open", "arguments": '{"url":"https://x.test"}'}},
+            ],
+        }
+    ]
+    assert AgentExternalModelBroker._search_queries_from_transcript(transcript) == [
+        "rare collaborator archive",
+        "candidate history",
+    ]

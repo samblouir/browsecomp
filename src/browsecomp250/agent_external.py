@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Callable
 from typing import Any
@@ -231,6 +232,7 @@ class AgentExternalModelBroker:
             "provider": "frontierrl-agent",
             "model": self.model_config.model,
             "content": content,
+            "agent_search_queries": self._search_queries_from_transcript(outcome.transcript),
             "usage": {
                 "prompt_tokens": outcome.usage.input_tokens,
                 "completion_tokens": outcome.usage.output_tokens,
@@ -246,6 +248,38 @@ class AgentExternalModelBroker:
                 "errors": outcome.errors[-3:],
             },
         }
+
+    @staticmethod
+    def _search_queries_from_transcript(transcript: list[dict[str, Any]]) -> list[str]:
+        queries: list[str] = []
+        for message in transcript:
+            tool_calls = message.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    continue
+                name = str(function.get("name") or "")
+                arguments = function.get("arguments")
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        continue
+                if not isinstance(arguments, dict):
+                    continue
+                if name == "search":
+                    value = str(arguments.get("query") or "").strip()
+                    if value:
+                        queries.append(value)
+                elif name == "search_many":
+                    values = arguments.get("queries")
+                    if isinstance(values, list):
+                        queries.extend(str(value).strip() for value in values if str(value).strip())
+        return list(dict.fromkeys(queries))
 
 
 __all__ = ["AgentExternalModelBroker"]

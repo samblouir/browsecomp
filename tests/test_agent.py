@@ -787,6 +787,23 @@ def test_search_strategy_parser_returns_only_novel_queries() -> None:
     ) == ["entity history explorer"]
 
 
+def test_search_strategy_parser_falls_back_to_helper_executed_queries() -> None:
+    result = {
+        "ok": True,
+        "content": "The helper returned prose instead of the requested query JSON.",
+        "agent_search_queries": [
+            "same clue 2012-2023",
+            "rare collaborator archive",
+            "rare collaborator archive",
+        ],
+    }
+    assert AgentRunner._strategy_queries_from_result(
+        result,
+        prior_queries=["same clue 2012..2023"],
+        limit=4,
+    ) == ["rare collaborator archive"]
+
+
 def test_consultation_strategy_uses_only_designated_role() -> None:
     consultations = [
         {

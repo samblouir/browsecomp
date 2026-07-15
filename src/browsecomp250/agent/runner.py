@@ -470,6 +470,7 @@ class AgentRunner:
                         "search_strategy_recovery_completed",
                         step=step,
                         query_count=len(strategy_queries),
+                        replacement_queries=strategy_queries,
                         request_id=strategy_result.get("request_id"),
                     )
                 else:
@@ -478,6 +479,7 @@ class AgentRunner:
                         step=step,
                         error=strategy_result.get("error") or "no novel queries returned",
                         request_id=strategy_result.get("request_id"),
+                        result=strategy_result,
                     )
             if action is None:
                 action = original_action
@@ -1453,6 +1455,11 @@ class AgentRunner:
             queries = value.get("queries")
             if isinstance(queries, list):
                 candidates.extend(str(query).strip() for query in queries if str(query).strip())
+        fallback_queries = result.get("agent_search_queries")
+        if isinstance(fallback_queries, list):
+            candidates.extend(
+                str(query).strip() for query in fallback_queries if str(query).strip()
+            )
         accepted: list[str] = []
         comparison_queries = list(prior_queries)
         for query in candidates:
