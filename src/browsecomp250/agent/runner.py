@@ -176,6 +176,9 @@ class AgentRunner:
         chain_delta_messages: list[dict[str, Any]] | None = None
         namespace_material = request_namespace or question
         chain_namespace = hashlib.sha256(namespace_material.encode("utf-8")).hexdigest()[:24]
+        request_headers = {
+            "X-FRL-Conversation-Id": f"bc250-{chain_namespace}",
+        }
 
         initial_user = (
             "Question:\n"
@@ -196,7 +199,12 @@ class AgentRunner:
             {"role": "user", "content": initial_user},
         ]
         transcript.extend(messages)
-        self._emit("trial_started", protocol=protocol, response_chain=chain_enabled)
+        self._emit(
+            "trial_started",
+            protocol=protocol,
+            response_chain=chain_enabled,
+            routing_conversation_id=request_headers["X-FRL-Conversation-Id"],
+        )
 
         for step in range(1, self.agent_config.max_steps + 1):
             if time.perf_counter() - started > 0.98 * 3600:
@@ -246,6 +254,7 @@ class AgentRunner:
                         extra_body=chain_body,
                         force_final=force_final_this_turn,
                         require_open=require_open,
+                        request_headers=request_headers,
                     )
                 )
                 try:
@@ -1224,6 +1233,7 @@ class AgentRunner:
         extra_body: dict[str, Any] | None = None,
         force_final: bool = False,
         require_open: bool = False,
+        request_headers: dict[str, str] | None = None,
     ):
         if protocol in {"tools", "auto"}:
             tool_choice: str | dict[str, Any] = "auto"
@@ -1245,8 +1255,13 @@ class AgentRunner:
                 tools=tools,
                 tool_choice=tool_choice,
                 extra_body=extra_body,
+                request_headers=request_headers,
             )
-        return await self.client.chat(messages, extra_body=extra_body)
+        return await self.client.chat(
+            messages,
+            extra_body=extra_body,
+            request_headers=request_headers,
+        )
 
     @staticmethod
     def _result_has_urls(result: dict[str, Any]) -> bool:

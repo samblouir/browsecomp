@@ -16,6 +16,7 @@ async def test_openai_compatible_request_and_response() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         captured["authorization"] = request.headers.get("authorization")
         captured["tenant"] = request.headers.get("x-tenant")
+        captured["conversation_id"] = request.headers.get("x-frl-conversation-id")
         captured["body"] = request.content.decode("utf-8")
         return httpx.Response(
             200,
@@ -59,9 +60,13 @@ async def test_openai_compatible_request_and_response() -> None:
         ),
         raw_client,
     )
-    response = await client.chat([{"role": "user", "content": "hello"}])
+    response = await client.chat(
+        [{"role": "user", "content": "hello"}],
+        request_headers={"X-FRL-Conversation-Id": "bc250-chain-1"},
+    )
     assert captured["authorization"] == "Bearer secret"
     assert captured["tenant"] == "frontierrl"
+    assert captured["conversation_id"] == "bc250-chain-1"
     assert '"model":"star"' in captured["body"].replace(" ", "")
     assert '"stream":false' in captured["body"].replace(" ", "")
     assert response.response_model == "served"

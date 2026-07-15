@@ -100,7 +100,12 @@ def test_star_profiles_use_selective_star2_help(name: str) -> None:
     assert parsed.external_model.mode == "agent"
     assert parsed.external_model.agent_model == "frontierrl/star-2"
     assert parsed.external_model.max_calls_per_task == 3
+    assert parsed.external_model.max_concurrency == 32
     assert parsed.external_model.max_output_tokens == 16384
+    assert parsed.model.api_base == "http://127.0.0.1:8003/v1"
+    assert parsed.model.response_chain is False
+    assert parsed.external_model.agent_api_base == "http://127.0.0.1:8003/v1"
+    assert parsed.external_model.agent_response_chain is False
 
 
 def test_unknown_config_field_is_rejected(tmp_path: Path) -> None:

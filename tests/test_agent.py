@@ -515,12 +515,16 @@ async def test_agent_response_chain_sends_only_tool_delta(tmp_path: Path) -> Non
     root_messages, root_kwargs = model.calls[0]
     assert [message["role"] for message in root_messages] == ["system", "user"]
     assert root_kwargs["extra_body"]["frontierrl_messages_mode"] == "full"
+    assert root_kwargs["request_headers"] == {
+        "X-FRL-Conversation-Id": "bc250-29c60a6f7b8c03ccf4ae8ca6"
+    }
     delta_messages, delta_kwargs = model.calls[1]
     assert len(delta_messages) == 1
     assert delta_messages[0]["role"] == "user"
     assert delta_messages[0]["content"].startswith("Tool result:")
     assert delta_kwargs["extra_body"]["frontierrl_messages_mode"] == "delta"
     assert delta_kwargs["extra_body"]["frontierrl_previous_response_id"] == "chatcmpl-frlstate-root"
+    assert delta_kwargs["request_headers"] == root_kwargs["request_headers"]
 
 
 @pytest.mark.asyncio

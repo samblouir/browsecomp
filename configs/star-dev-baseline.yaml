@@ -2,7 +2,7 @@ run:
   name: "${BC250_RUN_NAME:-browsecomp250-star7-dev-assisted-v9-20260715}"
   output_dir: runs
   seed: 20260715
-  concurrency: 7
+  concurrency: ${BC250_RUN_CONCURRENCY:-7}
   attempts: 1
   shuffle: false
   resume: true
@@ -19,7 +19,7 @@ dataset:
   subset_size: 250
 
 model:
-  api_base: "${BC250_MODEL_API_BASE:-http://127.0.0.1:8000/agent/v1}"
+  api_base: "${BC250_MODEL_API_BASE:-http://127.0.0.1:8003/v1}"
   api_key: "${BC250_MODEL_API_KEY:-frontierrl-public}"
   allow_empty_api_key: false
   model: "${BC250_MODEL_NAME:-frontierrl/star-7}"
@@ -29,7 +29,7 @@ model:
   max_output_tokens: 16384
   timeout_seconds: 360
   max_retries: 10
-  response_chain: true
+  response_chain: ${BC250_MODEL_RESPONSE_CHAIN:-false}
   input_price_per_million: ${BC250_MODEL_INPUT_PRICE_PER_MILLION:-0}
   output_price_per_million: ${BC250_MODEL_OUTPUT_PRICE_PER_MILLION:-0}
   extra_body:
@@ -116,14 +116,14 @@ external_model:
   max_output_tokens: 16384
   max_calls_per_task: 3
   max_batch_size: 4
-  max_concurrency: 4
+  max_concurrency: ${BC250_EXTERNAL_MAX_CONCURRENCY:-32}
   timeout_seconds: 900
   max_retries: 2
-  agent_api_base: "${BC250_EXTERNAL_AGENT_API_BASE:-http://127.0.0.1:8000/agent/v1}"
+  agent_api_base: "${BC250_EXTERNAL_AGENT_API_BASE:-http://127.0.0.1:8003/v1}"
   agent_api_key: "${BC250_MODEL_API_KEY:-frontierrl-public}"
   agent_allow_empty_api_key: false
   agent_model: frontierrl/star-2
-  agent_response_chain: true
+  agent_response_chain: ${BC250_EXTERNAL_AGENT_RESPONSE_CHAIN:-false}
   agent_max_steps: 80
   agent_max_denoising_steps: 48
 

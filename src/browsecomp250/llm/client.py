@@ -54,8 +54,12 @@ class OpenAICompatibleClient:
             base = base[: -len("/chat/completions")]
         return base + "/models"
 
-    def headers(self) -> dict[str, str]:
-        headers = {"Content-Type": "application/json", **self.settings.extra_headers}
+    def headers(self, request_headers: dict[str, str] | None = None) -> dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            **self.settings.extra_headers,
+            **(request_headers or {}),
+        }
         if self.settings.api_key:
             headers.setdefault("Authorization", f"Bearer {self.settings.api_key}")
         return headers
@@ -80,6 +84,7 @@ class OpenAICompatibleClient:
         tool_choice: str | dict[str, Any] | None = None,
         response_format: dict[str, Any] | None = None,
         extra_body: dict[str, Any] | None = None,
+        request_headers: dict[str, str] | None = None,
     ) -> ModelResponse:
         body: dict[str, Any] = {
             "model": self.settings.model,
@@ -107,7 +112,7 @@ class OpenAICompatibleClient:
                 async with asyncio.timeout(self.settings.timeout_seconds):
                     response = await self.client.post(
                         self.chat_completions_url,
-                        headers=self.headers(),
+                        headers=self.headers(request_headers),
                         json=body,
                         timeout=self.settings.timeout_seconds,
                     )

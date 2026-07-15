@@ -166,7 +166,7 @@ class ExternalModelConfig(StrictConfigModel):
     max_output_tokens: int = Field(default=16384, ge=16384, le=32768)
     max_calls_per_task: int = Field(default=8, ge=0, le=64)
     max_batch_size: int = Field(default=4, ge=1, le=4)
-    max_concurrency: int = Field(default=4, ge=1, le=16)
+    max_concurrency: int = Field(default=4, ge=1, le=256)
     timeout_seconds: float = Field(default=900, gt=0)
     max_retries: int = Field(default=2, ge=0, le=10)
     agent_api_base: str = "http://127.0.0.1:8000/agent/v1"
