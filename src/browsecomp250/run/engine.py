@@ -79,7 +79,13 @@ class BenchmarkEngine:
                 "Benchmark credential preflight failed before launch: " + "; ".join(problems)
             )
 
-    def _build_lock(self, *, start: int = 0, limit: int | None = None) -> dict[str, Any]:
+    def _build_lock(
+        self,
+        *,
+        start: int = 0,
+        limit: int | None = None,
+        ranks: list[int] | None = None,
+    ) -> dict[str, Any]:
         dataset_metadata = validate_dataset_file(
             dataset_path(self.config.dataset), self.config.dataset
         )
@@ -118,8 +124,10 @@ class BenchmarkEngine:
                 "external_agent_api_key": replay_material["external_agent_api_key_fingerprint"],
             },
         }
-        selection = {"start": start, "limit": limit}
-        if start > 0:
+        selection: dict[str, Any] = (
+            {"ranks": ranks} if ranks is not None else {"start": start, "limit": limit}
+        )
+        if ranks is not None or start > 0:
             # Older run locks predate ranged execution. Preserve their start=0
             # resume compatibility while locking every nonzero held-out range.
             replay_material["selection"] = selection
@@ -151,7 +159,31 @@ class BenchmarkEngine:
             "resume_hash": canonical_sha256(resume_material),
         }
 
-    async def run(self, *, start: int = 0, limit: int | None = None) -> dict[str, Any]:
+    async def run(
+        self,
+        *,
+        start: int = 0,
+        limit: int | None = None,
+        ranks: list[int] | None = None,
+    ) -> dict[str, Any]:
+        if ranks is not None and (start != 0 or limit is not None):
+            raise ValueError("ranks cannot be combined with start or limit")
+        if ranks is not None:
+            if not ranks:
+                raise ValueError("ranks must contain at least one subset rank")
+            if len(ranks) != len(set(ranks)):
+                raise ValueError("ranks must not contain duplicates")
+            invalid_ranks = [
+                rank
+                for rank in ranks
+                if rank < 0 or rank >= self.config.dataset.subset_size
+            ]
+            if invalid_ranks:
+                raise ValueError(
+                    "ranks must be between 0 and "
+                    f"{self.config.dataset.subset_size - 1}; invalid: {invalid_ranks}"
+                )
+            ranks = sorted(ranks)
         if start < 0:
             raise ValueError("start must be non-negative")
         if start >= self.config.dataset.subset_size:
@@ -172,11 +204,15 @@ class BenchmarkEngine:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.storage.write_private_readme()
         write_dataset_manifest(self.config.dataset)
-        self.storage.write_lock(self._build_lock(start=start, limit=limit))
+        self.storage.write_lock(self._build_lock(start=start, limit=limit, ranks=ranks))
         items = load_items(self.config.dataset)
-        items = items[start:]
-        if limit is not None:
-            items = items[:limit]
+        if ranks is not None:
+            items_by_rank = {item.subset_rank: item for item in items}
+            items = [items_by_rank[rank] for rank in ranks]
+        else:
+            items = items[start:]
+            if limit is not None:
+                items = items[:limit]
 
         work = [
             (item, attempt) for attempt in range(1, self.config.run.attempts + 1) for item in items

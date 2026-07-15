@@ -292,12 +292,19 @@ def run(
         typer.Option(help="Start at this zero-based frozen-subset rank"),
     ] = 0,
     limit: Annotated[int | None, typer.Option(help="Run the first N frozen subset items")] = None,
+    rank: Annotated[
+        list[int] | None,
+        typer.Option(
+            "--rank",
+            help="Run this exact frozen-subset rank; repeat for multiple ranks",
+        ),
+    ] = None,
 ) -> None:
     cfg = _load(config, env_file)
     if not dataset_path(cfg.dataset).exists():
         console.print("Dataset is missing; downloading the encrypted official CSV.")
         asyncio.run(download_dataset(cfg.dataset))
-    summary = asyncio.run(BenchmarkEngine(cfg).run(start=start, limit=limit))
+    summary = asyncio.run(BenchmarkEngine(cfg).run(start=start, limit=limit, ranks=rank))
     console.print_json(json.dumps(summary))
     console.print(f"Run directory: [bold]{cfg.run.output_dir / cfg.run.name}[/bold]")
 

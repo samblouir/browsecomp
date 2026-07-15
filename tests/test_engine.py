@@ -181,6 +181,85 @@ async def test_engine_runs_a_locked_heldout_range(monkeypatch, tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_engine_runs_exact_noncontiguous_ranks(monkeypatch, tmp_path: Path) -> None:
+    import browsecomp250.run.engine as engine_module
+
+    cache_dir = tmp_path / "cache"
+    _write_synthetic_dataset(cache_dir / "browse_comp_test_set.csv")
+    repository_root = Path(__file__).parents[1]
+    config = AppConfig(
+        run=RunConfig(
+            name="fixture-exact-ranks-run",
+            output_dir=tmp_path / "runs",
+            concurrency=3,
+            shuffle=False,
+        ),
+        dataset=DatasetConfig(
+            source_url="https://example.test/encrypted.csv",
+            cache_dir=cache_dir,
+            subset_indices_path=repository_root / "data" / "subset_indices.json",
+        ),
+        model=ModelConfig(api_base="https://model.test/v1", api_key="key", model="star"),
+        search=SearchConfig(provider="searxng", cache_path=tmp_path / "search.sqlite3"),
+        browser=BrowserConfig(cache_path=tmp_path / "pages.sqlite3", block_private_networks=False),
+        agent=AgentConfig(),
+        grader=GraderConfig(mode="deterministic"),
+        report=ReportConfig(bootstrap_samples=200),
+    )
+
+    monkeypatch.setattr(engine_module, "AgentRunner", _FakeAgentRunner)
+    monkeypatch.setattr(engine_module, "OpenAICompatibleClient", _FakeClosable)
+    monkeypatch.setattr(engine_module, "create_search_provider", lambda config: _FakeClosable())
+    monkeypatch.setattr(engine_module, "PageFetcher", _FakeClosable)
+    monkeypatch.setattr(engine_module, "Grader", _FakeGrader)
+
+    summary = await BenchmarkEngine(config).run(ranks=[24, 2, 10])
+    run_dir = tmp_path / "runs" / "fixture-exact-ranks-run"
+    records = [
+        json.loads(line) for line in (run_dir / "private" / "trials.jsonl").read_text().splitlines()
+    ]
+    lock = json.loads((run_dir / "run.lock.json").read_text())
+    assert summary["n_scored"] == 3
+    assert [record["subset_rank"] for record in records] == [2, 10, 24]
+    assert lock["selection"] == {"ranks": [2, 10, 24]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"ranks": []}, "at least one"),
+        ({"ranks": [2, 2]}, "duplicates"),
+        ({"ranks": [-1]}, "between 0 and 249"),
+        ({"ranks": [250]}, "between 0 and 249"),
+        ({"ranks": [2], "start": 1}, "cannot be combined"),
+        ({"ranks": [2], "limit": 1}, "cannot be combined"),
+    ],
+)
+async def test_engine_rejects_invalid_exact_rank_selection(
+    tmp_path: Path,
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    config = AppConfig(
+        run=RunConfig(name="fixture-invalid-ranks", output_dir=tmp_path / "runs"),
+        dataset=DatasetConfig(),
+        model=ModelConfig(api_base="https://model.test/v1", api_key="key", model="star"),
+        search=SearchConfig(provider="searxng", cache_path=tmp_path / "search.sqlite3"),
+        browser=BrowserConfig(cache_path=tmp_path / "pages.sqlite3", block_private_networks=False),
+        agent=AgentConfig(),
+        grader=GraderConfig(mode="deterministic"),
+        report=ReportConfig(),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        await BenchmarkEngine(config).run(**kwargs)  # type: ignore[arg-type]
+    assert not (
+        tmp_path / "runs" / "fixture-invalid-ranks" / "run.lock.json"
+    ).exists()
+
+
+@pytest.mark.asyncio
 async def test_engine_enforces_per_cohort_concurrency(monkeypatch, tmp_path: Path) -> None:
     import browsecomp250.run.engine as engine_module
 
