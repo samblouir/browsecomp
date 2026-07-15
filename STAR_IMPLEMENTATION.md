@@ -39,6 +39,7 @@ Both `configs/star-smoke.yaml` and `configs/star-headline.yaml` enforce:
   phase, with a safe reader fallback for blocked public origins;
 - bounded duplicate-action recovery that opens fresh discovered pages before
   requiring a final answer with an unchanged tool schema;
+- protocol normalization for unambiguous singular/batch tool-name mismatches;
 - bounded wall time and action budgets; and
 - durable per-step heartbeat and event logs.
 

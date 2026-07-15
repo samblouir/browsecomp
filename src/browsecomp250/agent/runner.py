@@ -622,10 +622,13 @@ class AgentRunner:
             if protocol == "tools" and assistant_message.get("tool_calls"):
                 messages.append(assistant_message)
                 tool_call = assistant_message["tool_calls"][0]
+                original_tool_name = str(
+                    (tool_call.get("function") or {}).get("name") or action.action
+                )
                 result_message = {
                     "role": "tool",
                     "tool_call_id": tool_call.get("id", f"call-{step}"),
-                    "name": action.action,
+                    "name": original_tool_name,
                     "content": result_text,
                 }
                 messages.append(result_message)

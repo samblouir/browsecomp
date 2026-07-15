@@ -132,5 +132,18 @@ def action_from_tool_call(tool_call: dict[str, Any]) -> AgentAction:
         raise ProtocolError(f"Invalid tool arguments type for {name}")
     if name not in _ALLOWED_ACTIONS:
         raise ProtocolError(f"Unknown tool: {name}")
+    # Reasoning models occasionally pair a singular tool name with its batch
+    # argument (or vice versa). The intended operation is unambiguous, so
+    # normalize the shape instead of discarding a useful evidence request.
+    if name == "search" and "query" not in payload and isinstance(payload.get("queries"), list):
+        name = "search_many"
+    elif (
+        name == "search_many" and "queries" not in payload and isinstance(payload.get("query"), str)
+    ):
+        name = "search"
+    elif name == "open" and "url" not in payload and isinstance(payload.get("urls"), list):
+        name = "open_many"
+    elif name == "open_many" and "urls" not in payload and isinstance(payload.get("url"), str):
+        name = "open"
     _validate_payload(name, payload)
     return AgentAction(action=name, payload=payload)  # type: ignore[arg-type]
