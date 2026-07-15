@@ -249,3 +249,29 @@ async def test_engine_rejects_placeholder_search_key_before_writing_lock(
     with pytest.raises(RuntimeError, match="brave search API key is a placeholder"):
         await BenchmarkEngine(config).run(limit=1)
     assert not (tmp_path / "runs" / "fixture-placeholder-search" / "run.lock.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_engine_rejects_placeholder_openrouter_search_key_before_lock(
+    tmp_path: Path,
+) -> None:
+    config = AppConfig(
+        run=RunConfig(name="fixture-placeholder-openrouter", output_dir=tmp_path / "runs"),
+        dataset=DatasetConfig(),
+        model=ModelConfig(api_base="https://model.test/v1", api_key="key", model="star"),
+        search=SearchConfig(
+            provider="openrouter_exa",
+            openrouter_api_key="change-me",
+            cache_path=tmp_path / "search.sqlite3",
+        ),
+        browser=BrowserConfig(cache_path=tmp_path / "pages.sqlite3", block_private_networks=False),
+        agent=AgentConfig(),
+        grader=GraderConfig(mode="deterministic"),
+        report=ReportConfig(),
+    )
+
+    with pytest.raises(RuntimeError, match="openrouter_exa search API key is a placeholder"):
+        await BenchmarkEngine(config).run(limit=1)
+    assert not (
+        tmp_path / "runs" / "fixture-placeholder-openrouter" / "run.lock.json"
+    ).exists()

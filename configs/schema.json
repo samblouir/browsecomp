@@ -750,6 +750,7 @@
             "brave",
             "google_chrome",
             "hybrid",
+            "openrouter_exa",
             "tavily",
             "serper",
             "searxng",
@@ -821,6 +822,55 @@
           "default": "",
           "title": "Brave Api Key",
           "type": "string"
+        },
+        "openrouter_api_key": {
+          "default": "",
+          "title": "Openrouter Api Key",
+          "type": "string"
+        },
+        "openrouter_api_base": {
+          "default": "https://openrouter.ai/api/v1",
+          "title": "Openrouter Api Base",
+          "type": "string"
+        },
+        "openrouter_search_model": {
+          "default": "openai/gpt-4.1-nano",
+          "title": "Openrouter Search Model",
+          "type": "string"
+        },
+        "openrouter_search_max_concurrency": {
+          "default": 32,
+          "maximum": 256,
+          "minimum": 1,
+          "title": "Openrouter Search Max Concurrency",
+          "type": "integer"
+        },
+        "openrouter_search_max_results": {
+          "default": 10,
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Openrouter Search Max Results",
+          "type": "integer"
+        },
+        "openrouter_search_temperature": {
+          "default": 0.3,
+          "maximum": 1.0,
+          "minimum": 0.3,
+          "title": "Openrouter Search Temperature",
+          "type": "number"
+        },
+        "openrouter_search_top_p": {
+          "default": 0.95,
+          "exclusiveMinimum": 0,
+          "maximum": 1.0,
+          "title": "Openrouter Search Top P",
+          "type": "number"
+        },
+        "openrouter_search_max_output_tokens": {
+          "default": 16384,
+          "minimum": 16384,
+          "title": "Openrouter Search Max Output Tokens",
+          "type": "integer"
         },
         "tavily_api_key": {
           "default": "",
@@ -894,6 +944,27 @@
           "minimum": 0,
           "title": "Google Chrome Max Retries",
           "type": "integer"
+        },
+        "yahoo_max_concurrency": {
+          "default": 3,
+          "maximum": 8,
+          "minimum": 1,
+          "title": "Yahoo Max Concurrency",
+          "type": "integer"
+        },
+        "yahoo_min_interval_seconds": {
+          "default": 0.35,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Yahoo Min Interval Seconds",
+          "type": "number"
+        },
+        "yahoo_error_cooldown_seconds": {
+          "default": 3.0,
+          "maximum": 60,
+          "minimum": 0,
+          "title": "Yahoo Error Cooldown Seconds",
+          "type": "number"
         },
         "hybrid_mode": {
           "default": "merge",

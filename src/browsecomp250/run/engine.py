@@ -314,6 +314,16 @@ class BenchmarkEngine:
                         group.create_task(execute(item, attempt))
             else:
                 await asyncio.gather(*(execute(item, attempt) for item, attempt in work))
+        except asyncio.CancelledError:
+            self.storage.update_status(
+                state="interrupted",
+                finished_at=utc_now_iso(),
+                completed=progress["completed"],
+                failed=progress["failed"],
+                remaining=max(0, len(work) - progress["completed"]),
+                active_trials={},
+            )
+            raise
         finally:
             await grader.close()
             await page_fetcher.close()
@@ -328,6 +338,8 @@ class BenchmarkEngine:
                 **sqlite_family_state(self.config.search.cache_path),
                 "namespace_entries": search_provider.cache.count(),
                 "mode": self.config.search.cache_mode,
+                "provider": self.config.search.provider,
+                "provider_metrics": getattr(search_provider, "audit_metrics", lambda: {})(),
             },
             "pages": {
                 **sqlite_family_state(self.config.browser.cache_path),

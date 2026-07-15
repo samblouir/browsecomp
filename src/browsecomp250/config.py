@@ -92,6 +92,7 @@ class SearchConfig(StrictConfigModel):
         "brave",
         "google_chrome",
         "hybrid",
+        "openrouter_exa",
         "tavily",
         "serper",
         "searxng",
@@ -107,6 +108,14 @@ class SearchConfig(StrictConfigModel):
     cache_mode: Literal["off", "read", "write", "readwrite", "refresh"] = "readwrite"
     cache_path: Path = Path("~/.cache/browsecomp250/search-cache.sqlite3")
     brave_api_key: str = ""
+    openrouter_api_key: str = ""
+    openrouter_api_base: str = "https://openrouter.ai/api/v1"
+    openrouter_search_model: str = "openai/gpt-4.1-nano"
+    openrouter_search_max_concurrency: int = Field(default=32, ge=1, le=256)
+    openrouter_search_max_results: int = Field(default=10, ge=1, le=10)
+    openrouter_search_temperature: float = Field(default=0.3, ge=0.3, le=1.0)
+    openrouter_search_top_p: float = Field(default=0.95, gt=0, le=1.0)
+    openrouter_search_max_output_tokens: int = Field(default=16384, ge=16384)
     tavily_api_key: str = ""
     serper_api_key: str = ""
     searxng_base_url: str = "http://127.0.0.1:8080"
@@ -120,6 +129,9 @@ class SearchConfig(StrictConfigModel):
     google_chrome_timeout_seconds: float = Field(default=45, gt=0, le=300)
     google_chrome_connect_timeout_seconds: int = Field(default=5, ge=1, le=60)
     google_chrome_max_retries: int = Field(default=0, ge=0, le=3)
+    yahoo_max_concurrency: int = Field(default=3, ge=1, le=8)
+    yahoo_min_interval_seconds: float = Field(default=0.35, ge=0, le=10)
+    yahoo_error_cooldown_seconds: float = Field(default=3.0, ge=0, le=60)
     hybrid_mode: Literal["merge", "google_first", "brave_first"] = "merge"
 
     def selected_api_key(self) -> str:
@@ -127,6 +139,7 @@ class SearchConfig(StrictConfigModel):
             "brave": self.brave_api_key,
             "google_chrome": "",
             "hybrid": self.brave_api_key,
+            "openrouter_exa": self.openrouter_api_key,
             "tavily": self.tavily_api_key,
             "serper": self.serper_api_key,
             "searxng": "",
@@ -135,7 +148,13 @@ class SearchConfig(StrictConfigModel):
         }[self.provider]
 
     def requires_api_key(self) -> bool:
-        return self.provider in {"brave", "hybrid", "tavily", "serper"}
+        return self.provider in {
+            "brave",
+            "hybrid",
+            "openrouter_exa",
+            "tavily",
+            "serper",
+        }
 
 
 class ExternalModelConfig(StrictConfigModel):

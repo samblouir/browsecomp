@@ -64,6 +64,27 @@ reports must disclose hybrid search rather than calling it a Brave-only run.
 
 Do not use either Chrome-backed provider for headline or development runs.
 
+### OpenRouter Exa web search
+
+```dotenv
+BC250_SEARCH_PROVIDER=openrouter_exa
+BC250_OPENROUTER_API_KEY=...
+BC250_OPENROUTER_SEARCH_MODEL=openai/gpt-4.1-nano
+BC250_OPENROUTER_SEARCH_MAX_CONCURRENCY=32
+```
+
+This adapter forces OpenRouter's `web` plugin to use Exa and requests ten
+results per query. The configured carrier model is transport only: its generated
+answer is discarded. Only standardized `url_citation` annotations are mapped to
+titles, URLs, and snippets. The run manifest records live request count, cited
+result count, carrier input/output tokens, and provider-reported cost.
+
+The evaluated reasoning model remains Star-7, and `ask_external_model` remains
+the separately configured Star-2 agent. Exa search therefore does not insert a
+third model's answer into the research transcript. This paid provider requires a
+working OpenRouter credential and is a distinct reporting stratum from Brave or
+Yahoo.
+
 ### Server-side Yahoo
 
 ```dotenv

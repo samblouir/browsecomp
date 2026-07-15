@@ -141,13 +141,17 @@ The `headline` command refuses configurations that weaken major minimum budgets,
 ## Supported search providers
 
 - Brave Search API
+- OpenRouter Exa web search with standardized URL citations
 - Experimental Google-in-user-Chrome and hybrid adapters (not used by Star campaigns)
 - Tavily Search API
 - Serper
 - SearXNG
 - Server-side Yahoo organic search (no user browser or API key)
 
-All providers are normalized to the same internal result schema. Fix the provider, region, language, safe-search setting, result count, and evaluation dates across compared systems.
+All providers are normalized to the same internal result schema. The OpenRouter
+Exa carrier's generated prose is discarded; only URL-citation annotations are
+used. Fix the provider, region, language, safe-search setting, result count, and
+evaluation dates across compared systems.
 
 The Star configs default to the Brave API and permit an explicit
 `BC250_SEARCH_PROVIDER` override that is frozen in each run's protocol lock.

@@ -7,6 +7,7 @@ from .base import SearchProvider
 from .brave import BraveSearchProvider
 from .google_chrome import GoogleChromeSearchProvider
 from .hybrid import HybridSearchProvider
+from .openrouter_exa import OpenRouterExaSearchProvider
 from .searxng import SearXNGSearchProvider
 from .serper import SerperSearchProvider
 from .tavily import TavilySearchProvider
@@ -21,6 +22,7 @@ def create_search_provider(
         "brave": BraveSearchProvider,
         "google_chrome": GoogleChromeSearchProvider,
         "hybrid": HybridSearchProvider,
+        "openrouter_exa": OpenRouterExaSearchProvider,
         "tavily": TavilySearchProvider,
         "serper": SerperSearchProvider,
         "searxng": SearXNGSearchProvider,

@@ -58,9 +58,12 @@ comparing scores.
 The Star smoke, development, and headline profiles default `search.provider` to
 `brave` and accept an explicit `BC250_SEARCH_PROVIDER` override. The resolved
 provider is frozen in the run lock. They do not open Google searches in a
-user's Chrome. This avoids personal-browser traffic challenges. If a campaign
-changes providers because of an upstream outage, its final report must preserve
-per-row provenance and present the resulting provider strata separately.
+user's Chrome. The current post-Brave development stratum pins
+`openrouter_exa`: Exa supplies standardized URL citations through a small
+carrier whose generated answer is discarded. Provider request, token, result,
+and cost counters are retained in the run manifest. If a campaign changes
+providers because of an upstream outage, its final report must preserve per-row
+provenance and present the resulting provider strata separately.
 
 ## External consultation
 

@@ -10,6 +10,7 @@ from ..types import SearchResult
 from .base import SearchError, SearchProvider
 
 _YAHOO_TARGET = re.compile(r"/RU=(?P<target>.*?)/RK=")
+_CONTROL_TOKEN = re.compile(r"<\|.*?\|>")
 
 
 class YahooSearchProvider(SearchProvider):
@@ -20,11 +21,17 @@ class YahooSearchProvider(SearchProvider):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._request_semaphore = asyncio.Semaphore(8)
+        self._request_semaphore = asyncio.Semaphore(self.config.yahoo_max_concurrency)
+        self._pace_lock = asyncio.Lock()
+        self._next_request_at = 0.0
 
     async def _search_live(self, query: str, count: int, offset: int) -> list[SearchResult]:
+        query = " ".join(_CONTROL_TOKEN.sub(" ", query).split())
+        if not query:
+            raise SearchError("Yahoo query was empty after control-token cleanup")
         first = offset * count + 1
         async with self._request_semaphore:
+            await self._wait_for_request_slot()
             response = await self.client.get(
                 self.endpoint,
                 params={"p": query, "b": first, "pz": count},
@@ -37,11 +44,29 @@ class YahooSearchProvider(SearchProvider):
                     ),
                 },
             )
+            if response.status_code == 429 or response.status_code >= 500:
+                await self._extend_cooldown()
         response.raise_for_status()
         results = self._parse_html(response.text, count=count, offset=offset)
         if not results:
             raise SearchError("Yahoo response contained no usable organic results")
         return results
+
+    async def _wait_for_request_slot(self) -> None:
+        async with self._pace_lock:
+            loop = asyncio.get_running_loop()
+            delay = max(0.0, self._next_request_at - loop.time())
+            if delay:
+                await asyncio.sleep(delay)
+            self._next_request_at = loop.time() + self.config.yahoo_min_interval_seconds
+
+    async def _extend_cooldown(self) -> None:
+        async with self._pace_lock:
+            loop = asyncio.get_running_loop()
+            self._next_request_at = max(
+                self._next_request_at,
+                loop.time() + self.config.yahoo_error_cooldown_seconds,
+            )
 
     @classmethod
     def _parse_html(cls, document: str, *, count: int, offset: int) -> list[SearchResult]:

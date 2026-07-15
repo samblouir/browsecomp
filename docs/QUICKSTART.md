@@ -79,6 +79,19 @@ Do not change model request fields between compared systems unless the variation
 
 ## 4. Configure search
 
+### OpenRouter Exa
+
+```dotenv
+BC250_SEARCH_PROVIDER=openrouter_exa
+BC250_OPENROUTER_API_KEY=replace-me
+BC250_OPENROUTER_SEARCH_MODEL=openai/gpt-4.1-nano
+BC250_OPENROUTER_SEARCH_MAX_CONCURRENCY=32
+```
+
+The carrier model only invokes Exa. Its generated prose is discarded; the
+harness exposes only standardized URL citations as search results and records
+provider-reported token and cost totals in the cache manifest.
+
 ### Brave
 
 ```dotenv

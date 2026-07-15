@@ -29,6 +29,11 @@ class SearchProvider(ABC):
         if self._owns_client:
             await self.client.aclose()
 
+    def audit_metrics(self) -> dict[str, Any]:
+        """Return provider-owned counters that are safe for the run manifest."""
+
+        return {}
+
     def _cache_request(self, query: str, count: int, offset: int) -> dict[str, Any]:
         return {
             "provider": self.name,
