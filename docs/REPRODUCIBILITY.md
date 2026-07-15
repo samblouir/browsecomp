@@ -98,6 +98,9 @@ This repository's simple engine runs one model configuration per run. A campaign
 - `pyproject.toml` uses bounded compatibility ranges.
 - `configs/schema.json` captures the configuration model.
 - `FILE_SHA256SUMS.txt` covers the distributed repository files.
+- Resume compatibility hashes immutable configuration, dataset, subset, and
+  credential fingerprints. The original mutable cache snapshot remains in the
+  run lock for provenance but does not make a run reject its own continuation.
 - the ZIP has a separate SHA-256 sidecar.
 
 For a long-lived campaign, build a container image and record its image digest.

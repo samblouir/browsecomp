@@ -10,7 +10,26 @@ from typing import Any
 from cryptography.fernet import Fernet
 
 from ..types import TrialRecord
-from ..util import atomic_write_json, atomic_write_text, utc_now_iso
+from ..util import atomic_write_json, atomic_write_text, canonical_sha256, utc_now_iso
+
+
+def _resume_compatibility_hash(lock: dict[str, Any]) -> str | None:
+    explicit = lock.get("resume_hash")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    config = lock.get("config")
+    dataset = lock.get("dataset")
+    subset_hash = lock.get("subset_indices_sha256")
+    if not isinstance(config, dict) or not isinstance(dataset, dict) or not subset_hash:
+        return None
+    return canonical_sha256(
+        {
+            "config": config,
+            "dataset_sha256": dataset.get("sha256"),
+            "subset_indices_sha256": subset_hash,
+            "secret_fingerprints": lock.get("secret_fingerprints") or {},
+        }
+    )
 
 
 class RunStorage:
@@ -39,7 +58,14 @@ class RunStorage:
     def write_lock(self, value: dict[str, Any]) -> None:
         if self.lock_path.exists():
             existing = json.loads(self.lock_path.read_text(encoding="utf-8"))
-            if existing.get("replay_hash") != value.get("replay_hash"):
+            existing_resume_hash = _resume_compatibility_hash(existing)
+            new_resume_hash = _resume_compatibility_hash(value)
+            compatible = (
+                existing_resume_hash == new_resume_hash
+                if existing_resume_hash is not None and new_resume_hash is not None
+                else existing.get("replay_hash") == value.get("replay_hash")
+            )
+            if not compatible:
                 raise FileExistsError(
                     f"Run directory already contains a different lock: {self.run_dir}"
                 )

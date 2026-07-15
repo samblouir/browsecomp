@@ -65,6 +65,19 @@ class BenchmarkEngine:
                 "pages": sqlite_family_state(self.config.browser.cache_path),
             },
         }
+        resume_material = {
+            "config": public_config,
+            "dataset_sha256": dataset_metadata["sha256"],
+            "subset_indices_sha256": SUBSET_INDICES_SHA256,
+            "secret_fingerprints": {
+                "model_api_key": replay_material["model_key_fingerprint"],
+                "grader_api_key": replay_material["grader_key_fingerprint"],
+                "search_api_key": replay_material["search_key_fingerprint"],
+                "external_model_admin_token": replay_material[
+                    "external_model_admin_token_fingerprint"
+                ],
+            },
+        }
         return {
             "schema_version": "1.0",
             "created_at": utc_now_iso(),
@@ -87,6 +100,7 @@ class BenchmarkEngine:
             "git": git_metadata(Path.cwd()),
             "cache_state_at_start": replay_material["cache_state_at_start"],
             "replay_hash": canonical_sha256(replay_material),
+            "resume_hash": canonical_sha256(resume_material),
         }
 
     async def run(self, *, limit: int | None = None) -> dict[str, Any]:
