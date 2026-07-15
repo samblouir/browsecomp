@@ -81,6 +81,13 @@ result count, carrier input/output tokens, provider-reported cost, and the numbe
 of rejected query-mirroring results. Adapter version, carrier model, engine, and
 maximum result count are part of the cache identity.
 
+Exa annotations can contain article-scale citation text rather than a conventional
+search snippet. The adapter bounds every citation passage to 2,400 characters,
+preserving both its beginning and end, so one early result cannot hide later
+results or dominate the agent context. The cache identity includes this limit,
+and the manifest records both the number of truncated snippets and the number of
+characters removed.
+
 The adapter rejects a narrow class of retrieval-poisoning pages whose long
 title and URL slug mechanically reproduce a long search query and whose snippet
 adds little independent information. This is intentionally not a general domain

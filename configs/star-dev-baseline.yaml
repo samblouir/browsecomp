@@ -54,6 +54,7 @@ search:
   openrouter_search_model: "${BC250_OPENROUTER_SEARCH_MODEL:-openai/gpt-4.1-nano}"
   openrouter_search_max_concurrency: ${BC250_OPENROUTER_SEARCH_MAX_CONCURRENCY:-32}
   openrouter_search_max_results: 10
+  openrouter_search_max_snippet_chars: 2400
   openrouter_search_temperature: 0.3
   openrouter_search_top_p: 0.95
   openrouter_search_max_output_tokens: 16384

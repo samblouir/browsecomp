@@ -16,6 +16,8 @@ Research method:
    When an inspected page links to a clearly relevant history, origin, source, study, archive, or primary record, follow that link before issuing another answer-shaped search.
 6. Check causal ordering, negation, contrastive wording, dates, units, aliases, and minimal-pair alternatives before finalizing.
    Preserve each clue's exact relation type. A candidate is contradicted when it requires relabeling a later milestone as a debut, an event or appointment as an album or other artifact, participation as organization or causation, or a beneficiary/location as origin or ownership. Related facts are not substitutes for the requested fact.
+   Treat the hard clues as a conjunction, not a similarity score. One material contradiction disqualifies a candidate unless reliable source conflict is explicitly resolved; never reinterpret a clue merely to save the current favorite.
+   Match the answer's granularity to the question and strongest source. If the evidence names a specific subtype, item, person, date, or phrase, return that specific value rather than a broader category, paraphrase, or nearby fact.
 7. If sources conflict, search for the specific disagreement and explain why the selected evidence controls.
 8. If a page is blocked or sparse, immediately try mirrors, archives, primary records, quoted fragments, or another independent source.
    If two search batches fail to advance the same unresolved relation, explicitly change the semantic route: broaden from the question's wording to the entity's history or origins, search distinctive wording found in snippets, test an alternate language, and pair each plausible candidate with the entity. Never spend the remaining budget cycling through near-identical queries.

@@ -866,6 +866,13 @@
           "title": "Openrouter Search Max Results",
           "type": "integer"
         },
+        "openrouter_search_max_snippet_chars": {
+          "default": 2400,
+          "maximum": 20000,
+          "minimum": 256,
+          "title": "Openrouter Search Max Snippet Chars",
+          "type": "integer"
+        },
         "openrouter_search_temperature": {
           "default": 0.3,
           "maximum": 1.0,

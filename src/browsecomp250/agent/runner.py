@@ -1930,7 +1930,10 @@ class AgentRunner:
                 "and return your single best concrete answer as a final JSON action. Reject any "
                 "candidate that only fits after substituting a related but different relation, such "
                 "as a later breakthrough for a debut, an event for an artifact, participation for "
-                "organizing, or beneficiary geography for the candidate's origin.",
+                "organizing, or beneficiary geography for the candidate's origin. Treat hard clues "
+                "as a conjunction: one material contradiction eliminates a candidate unless a "
+                "reliable source conflict is explicitly resolved. Return the narrowest exact value "
+                "supported by the source, never a generic hypernym for a known specific answer.",
             ),
             (
                 "Comparative adversarial auditor",
@@ -2006,7 +2009,10 @@ class AgentRunner:
                     "after changing the relation type; do not relabel a breakthrough as a debut, an "
                     "appointment as an album, participation as organizing, or a beneficiary as a "
                     "homeland. Independently search the leading candidate and strongest alternative "
-                    "before finalizing. Return exactly one JSON object and no markdown."
+                    "before finalizing. Treat hard clues as a conjunction and eliminate a candidate "
+                    "with any unresolved material contradiction. Preserve the most specific answer "
+                    "wording supported by the evidence rather than broadening it. Return exactly one "
+                    "JSON object and no markdown."
                 ),
                 "query": (
                     "Return this exact schema: "

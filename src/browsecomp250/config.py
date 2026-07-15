@@ -113,6 +113,7 @@ class SearchConfig(StrictConfigModel):
     openrouter_search_model: str = "openai/gpt-4.1-nano"
     openrouter_search_max_concurrency: int = Field(default=32, ge=1, le=256)
     openrouter_search_max_results: int = Field(default=10, ge=1, le=10)
+    openrouter_search_max_snippet_chars: int = Field(default=2400, ge=256, le=20000)
     openrouter_search_temperature: float = Field(default=0.3, ge=0.3, le=1.0)
     openrouter_search_top_p: float = Field(default=0.95, gt=0, le=1.0)
     openrouter_search_max_output_tokens: int = Field(default=16384, ge=16384)

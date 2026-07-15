@@ -45,6 +45,8 @@ async def test_brave_adapter(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_openrouter_exa_uses_only_standardized_url_citations(tmp_path: Path) -> None:
+    long_second_snippet = "Second cited passage. " + "detail " * 100 + "Tail marker."
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["Authorization"] == "Bearer or-key"
         payload = json.loads(request.content)
@@ -75,7 +77,7 @@ async def test_openrouter_exa_uses_only_standardized_url_citations(tmp_path: Pat
                                     "url_citation": {
                                         "url": "https://example.test/b\\",
                                         "title": "Second source",
-                                        "content": "Second cited passage.",
+                                        "content": long_second_snippet,
                                     },
                                 },
                             ],
@@ -97,26 +99,28 @@ async def test_openrouter_exa_uses_only_standardized_url_citations(tmp_path: Pat
         SearchConfig(
             provider="openrouter_exa",
             openrouter_api_key="or-key",
+            openrouter_search_max_snippet_chars=256,
             cache_mode="off",
             cache_path=tmp_path / "cache.sqlite3",
         ),
         client,
     )
     results = await provider.search("citation test", count=2)
-    assert [(result.title, result.url, result.snippet, result.source) for result in results] == [
-        (
-            "First source",
-            "https://example.test/a",
-            "First cited passage.",
-            "openrouter_exa",
-        ),
-        (
-            "Second source",
-            "https://example.test/b",
-            "Second cited passage.",
-            "openrouter_exa",
-        ),
-    ]
+    assert (results[0].title, results[0].url, results[0].snippet, results[0].source) == (
+        "First source",
+        "https://example.test/a",
+        "First cited passage.",
+        "openrouter_exa",
+    )
+    assert (results[1].title, results[1].url, results[1].source) == (
+        "Second source",
+        "https://example.test/b",
+        "openrouter_exa",
+    )
+    assert len(results[1].snippet) <= 256
+    assert results[1].snippet.startswith("Second cited passage.")
+    assert results[1].snippet.endswith("Tail marker.")
+    assert "chars omitted" in results[1].snippet
     assert all("carrier answer" not in result.snippet for result in results)
     assert provider.audit_metrics() == {
         "carrier_model": "openai/gpt-4.1-nano",
@@ -127,6 +131,8 @@ async def test_openrouter_exa_uses_only_standardized_url_citations(tmp_path: Pat
         "total_tokens": 125,
         "results": 2,
         "filtered_query_mirrors": 0,
+        "truncated_snippets": 1,
+        "snippet_chars_removed": len(long_second_snippet) - len(results[1].snippet),
         "cost_usd": 0.0052,
     }
     await client.aclose()

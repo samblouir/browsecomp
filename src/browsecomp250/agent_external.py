@@ -119,7 +119,10 @@ class AgentExternalModelBroker:
             "Use the supplied public-web tools whenever they can verify a material claim.",
             (
                 "Before finalizing, run independent searches that try to falsify the leading "
-                "candidate and test whether every hard clue preserves its exact relation type."
+                "candidate and test whether every hard clue preserves its exact relation type. "
+                "Treat the clues as a conjunction: do not rescue a materially contradicted "
+                "candidate by reinterpretation, and return the most specific source-supported "
+                "answer rather than a broader category."
             ),
             (
                 "Complete through the final tool. Put the full requested deliverable in final."

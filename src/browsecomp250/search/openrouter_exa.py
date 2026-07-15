@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from ..types import SearchResult
+from ..util import truncate_middle
 from .base import SearchError, SearchProvider
 
 
@@ -17,7 +18,7 @@ class OpenRouterExaSearchProvider(SearchProvider):
     """
 
     name = "openrouter_exa"
-    adapter_version = 2
+    adapter_version = 3
 
     _word = re.compile(r"[a-z0-9]+")
     _stopwords = frozenset(
@@ -48,6 +49,8 @@ class OpenRouterExaSearchProvider(SearchProvider):
             "total_tokens": 0,
             "results": 0,
             "filtered_query_mirrors": 0,
+            "truncated_snippets": 0,
+            "snippet_chars_removed": 0,
             "cost_usd": 0.0,
         }
 
@@ -59,6 +62,7 @@ class OpenRouterExaSearchProvider(SearchProvider):
                 "carrier_model": self.config.openrouter_search_model,
                 "engine": "exa",
                 "max_results": self.config.openrouter_search_max_results,
+                "max_snippet_chars": self.config.openrouter_search_max_snippet_chars,
             }
         )
         return request
@@ -124,6 +128,14 @@ class OpenRouterExaSearchProvider(SearchProvider):
                     int(self._metrics["filtered_query_mirrors"]) + 1
                 )
                 continue
+            max_snippet_chars = self.config.openrouter_search_max_snippet_chars
+            if len(snippet) > max_snippet_chars:
+                original_length = len(snippet)
+                snippet = truncate_middle(snippet, max_snippet_chars)
+                self._metrics["truncated_snippets"] = int(self._metrics["truncated_snippets"]) + 1
+                self._metrics["snippet_chars_removed"] = int(
+                    self._metrics["snippet_chars_removed"]
+                ) + (original_length - len(snippet))
             seen_urls.add(url)
             results.append(
                 SearchResult(
