@@ -11,6 +11,7 @@ htmlcov/
 .cache/
 cache/
 runs/
+artifacts/
 private/
 data/browse_comp_test_set.csv
 data/cache/

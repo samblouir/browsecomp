@@ -1,5 +1,5 @@
 run:
-  name: browsecomp250-star7-agent-20260715
+  name: "${BC250_RUN_NAME:-browsecomp250-star7-agent-20260715}"
   output_dir: runs
   seed: 20260715
   concurrency: 7
