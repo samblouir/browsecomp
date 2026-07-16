@@ -833,6 +833,22 @@ def test_bing_yahoo_merge_interleaves_deduplicates_and_preserves_source() -> Non
     ]
 
 
+def test_bing_yahoo_uses_engine_redundancy_instead_of_child_retry_ladders(
+    tmp_path: Path,
+) -> None:
+    provider = BingYahooSSHSearchProvider(
+        SearchConfig(
+            provider="bing_yahoo_ssh",
+            max_retries=4,
+            cache_mode="off",
+            cache_path=tmp_path / "meta.sqlite3",
+        )
+    )
+
+    assert provider.bing.config.max_retries == 0
+    assert provider.yahoo.config.max_retries == 0
+
+
 def test_bing_yahoo_merge_uses_one_healthy_engine() -> None:
     yahoo = [SearchResult(title="Yahoo", url="https://example.test/y", source="yahoo_ssh")]
 

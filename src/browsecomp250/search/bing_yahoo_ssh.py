@@ -19,8 +19,11 @@ class BingYahooSSHSearchProvider(SearchProvider):
 
     def __init__(self, config: SearchConfig, client: httpx.AsyncClient | None = None):
         super().__init__(config, client=client)
-        self.bing = BingSSHSearchProvider(config, client=self.client)
-        self.yahoo = YahooSSHSearchProvider(config, client=self.client)
+        # In a redundant meta-provider, the other engine is the retry. Letting each
+        # child perform its own retry ladder multiplies one outage across every query.
+        child_config = config.model_copy(update={"max_retries": 0})
+        self.bing = BingSSHSearchProvider(child_config, client=self.client)
+        self.yahoo = YahooSSHSearchProvider(child_config, client=self.client)
         self._disabled_engines: dict[str, str] = {}
 
     def audit_metrics(self) -> dict[str, object]:
