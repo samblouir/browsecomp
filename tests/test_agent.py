@@ -1822,6 +1822,51 @@ def test_search_results_remove_query_mirrors_before_model_context() -> None:
     assert filtered["searches"][0]["results"] == [{"url": legitimate, "title": "Interview"}]
 
 
+def test_search_results_remove_loading_and_access_gate_spam_before_model_context() -> None:
+    question = "What time did the students and urban planner reach their first tour stop?"
+    result = {
+        "ok": True,
+        "succeeded": 1,
+        "failed": 0,
+        "searches": [
+            {
+                "query": '"students" "urban planner" first stop time',
+                "results": [
+                    {
+                        "url": "https://random.example/amphtml/news/x7z9",
+                        "title": "Students urban planner first stop time",
+                        "snippet": "Loading",
+                    },
+                    {
+                        "url": "https://another.example/article/q2",
+                        "title": "Students toured with urban planner",
+                        "snippet": (
+                            "This is an adult website. TAP ANYWHERE TO CONTINUE. "
+                            "I AM 18 OR OLDER ENTER."
+                        ),
+                    },
+                    {
+                        "url": "https://university.example.edu/tour",
+                        "title": "Planning studio study tour",
+                        "snippet": "The itinerary lists the first stop and scheduled time.",
+                    },
+                ],
+            }
+        ],
+    }
+
+    filtered = AgentRunner._filter_query_mirror_search_results(question, result)
+
+    assert filtered["filtered_query_mirror_results"] == 2
+    assert filtered["searches"][0]["results"] == [
+        {
+            "url": "https://university.example.edu/tour",
+            "title": "Planning studio study tour",
+            "snippet": "The itinerary lists the first stop and scheduled time.",
+        }
+    ]
+
+
 def test_external_final_review_rejects_query_mirror_citation() -> None:
     question = (
         "Which artist born in England made an album for fun, had a debut album between "

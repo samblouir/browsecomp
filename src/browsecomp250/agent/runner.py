@@ -3486,6 +3486,21 @@ class AgentRunner:
             )
         )
 
+    @staticmethod
+    def _search_result_has_unusable_snippet(row: dict[str, Any]) -> bool:
+        snippet = re.sub(r"\s+", " ", str(row.get("snippet") or "")).strip().casefold()
+        if snippet in {"loading", "loading...", "loading…"}:
+            return True
+        access_gate_markers = (
+            "this is an adult website",
+            "age-restricted content",
+            "tap anywhere to continue",
+            "i am 18 or older enter",
+            "premium access portal",
+            "unlock access tap to enter",
+        )
+        return any(marker in snippet for marker in access_gate_markers)
+
     @classmethod
     def _filter_query_mirror_search_results(
         cls,
@@ -3505,7 +3520,9 @@ class AgentRunner:
                 if not isinstance(row, dict):
                     continue
                 url = str(row.get("url") or "")
-                if url and cls._looks_like_query_mirror_url(question, url):
+                if cls._search_result_has_unusable_snippet(row) or (
+                    url and cls._looks_like_query_mirror_url(question, url)
+                ):
                     filtered += 1
                     continue
                 safe.append(row)
