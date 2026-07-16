@@ -118,6 +118,7 @@ def test_star_profiles_use_selective_star2_help(
     assert parsed.external_model.agent_response_chain is False
     if name == "star-headline.yaml":
         assert parsed.agent.max_history_chars == 300000
+        assert parsed.run.task_timeout_seconds == 3600
 
 
 def test_unknown_config_field_is_rejected(tmp_path: Path) -> None:

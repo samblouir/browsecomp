@@ -9,7 +9,7 @@ run:
   shuffle: true
   resume: true
   fail_fast: false
-  task_timeout_seconds: 1800
+  task_timeout_seconds: 3600
   write_private_transcripts: true
 
 dataset:
