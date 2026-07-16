@@ -3496,6 +3496,9 @@ class AgentRunner:
             "age-restricted content",
             "tap anywhere to continue",
             "i am 18 or older enter",
+            "18+ only",
+            "confirm you are over 18 years old",
+            "continue 18+ verified",
             "premium access portal",
             "unlock access tap to enter",
         )

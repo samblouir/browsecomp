@@ -1846,6 +1846,14 @@ def test_search_results_remove_loading_and_access_gate_spam_before_model_context
                         ),
                     },
                     {
+                        "url": "https://random-amphtml.example/",
+                        "title": "Students urban planner tour time",
+                        "snippet": (
+                            "18+ ONLY. Continue to Access. Please confirm you are over 18 "
+                            "years old. CONTINUE 18+ VERIFIED."
+                        ),
+                    },
+                    {
                         "url": "https://university.example.edu/tour",
                         "title": "Planning studio study tour",
                         "snippet": "The itinerary lists the first stop and scheduled time.",
@@ -1857,7 +1865,7 @@ def test_search_results_remove_loading_and_access_gate_spam_before_model_context
 
     filtered = AgentRunner._filter_query_mirror_search_results(question, result)
 
-    assert filtered["filtered_query_mirror_results"] == 2
+    assert filtered["filtered_query_mirror_results"] == 3
     assert filtered["searches"][0]["results"] == [
         {
             "url": "https://university.example.edu/tour",
