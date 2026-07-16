@@ -16,6 +16,31 @@ _GEO_CONSTRAINT = re.compile(
     r"within\s+\d|\d+(?:\.\d+)?\s*(?:miles?|mi|kilometers?|km|meters?|metres?|m)\b)",
     re.I,
 )
+_QUERY_WORD = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*")
+_WEAK_TEMPLATE_WORDS = {
+    "after",
+    "and",
+    "before",
+    "candidate",
+    "less",
+    "more",
+    "name",
+    "other",
+    "some",
+    "than",
+    "the",
+    "there",
+    "these",
+    "this",
+    "those",
+    "tuesday",
+    "using",
+    "what",
+    "when",
+    "where",
+    "which",
+    "who",
+}
 
 
 def _answer_aliases(record: dict[str, Any]) -> list[str]:
@@ -134,6 +159,52 @@ def _requires_geo_verification(record: dict[str, Any]) -> bool:
         )
         matches += len(_GEO_CONSTRAINT.findall(text))
     return matches >= 2
+
+
+def _template_information(query: str) -> list[str]:
+    without_candidate = query.replace(_CANDIDATE_PLACEHOLDER, " ")
+    return [
+        token
+        for token in _QUERY_WORD.findall(without_candidate)
+        if token.casefold() not in _WEAK_TEMPLATE_WORDS
+    ]
+
+
+def _candidate_verification_templates(
+    oracle_record: dict[str, Any],
+    discovery_profile: dict[str, Any],
+) -> list[str]:
+    """Keep relational guide queries and replace one-word clue fragments."""
+
+    oracle = oracle_record.get("oracle") or {}
+    candidates = [
+        redact_oracle_text(str(value), oracle_record)
+        for value in oracle.get("answer_conditioned_verification_queries") or []
+    ]
+    for phrase in [
+        *(discovery_profile.get("source_native_terms") or []),
+        *(discovery_profile.get("question_first_anchors") or []),
+    ]:
+        normalized = " ".join(str(phrase).split()[:10]).strip()
+        if normalized:
+            candidates.append(f'"{_CANDIDATE_PLACEHOLDER}" "{normalized}"')
+
+    selected: list[str] = []
+    seen: set[str] = set()
+    for query in candidates:
+        normalized = " ".join(query.split()).strip()
+        key = normalized.casefold()
+        if (
+            _CANDIDATE_PLACEHOLDER not in normalized
+            or len(_template_information(normalized)) < 2
+            or key in seen
+        ):
+            continue
+        seen.add(key)
+        selected.append(normalized)
+        if len(selected) >= 7:
+            break
+    return selected
 
 
 def compile_guided_steps(
@@ -516,10 +587,7 @@ def compile_guided_steps(
             }
         )
 
-    templates = [
-        redact_oracle_text(str(value), oracle_record)
-        for value in oracle.get("answer_conditioned_verification_queries") or []
-    ][:7]
+    templates = _candidate_verification_templates(oracle_record, discovery_profile)
     if templates:
         steps.append(
             {

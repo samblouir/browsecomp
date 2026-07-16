@@ -364,6 +364,8 @@ def _ensure_external_request_batch(
     *,
     minimum_batch_size: int | None,
     fallback_context: str | None,
+    required_request_tags: list[str] | None = None,
+    required_request_task_mode: str | None = None,
 ) -> dict[str, Any]:
     if not isinstance(minimum_batch_size, int) or minimum_batch_size <= 1:
         return payload
@@ -377,9 +379,6 @@ def _ensure_external_request_batch(
         and isinstance(item.get("query"), str)
         and bool(item["query"].strip())
     ]
-    if len(requests) >= target:
-        return {"requests": requests[:4]}
-
     context_candidates = [
         str(item.get("context") or "").removesuffix("\nquery:").strip()
         for item in request_values
@@ -388,6 +387,59 @@ def _ensure_external_request_batch(
     if fallback_context and fallback_context.strip():
         context_candidates.append(fallback_context.strip())
     context = max(context_candidates, key=len, default="")
+    tags = [str(value).strip() for value in required_request_tags or [] if str(value).strip()]
+    if tags:
+        tagged_requests: list[dict[str, Any]] = []
+        unused = list(requests)
+        for tag in tags[:target]:
+            tag_folded = tag.casefold()
+            matched_index = next(
+                (
+                    candidate_index
+                    for candidate_index, request in enumerate(unused)
+                    if tag_folded
+                    in "\n".join(
+                        str(request.get(key) or "")
+                        for key in ("query", "system", "context")
+                    ).casefold()
+                ),
+                None,
+            )
+            if matched_index is not None:
+                request = unused.pop(matched_index)
+            elif unused:
+                request = unused.pop(0)
+            else:
+                request = {}
+            query = str(request.get("query") or "").strip()
+            if sum(value.casefold() in query.casefold() for value in tags) != 1:
+                role_name = tag.strip("[]").split(":", 1)[-1].replace("_", " ")
+                query = (
+                    f"{tag} Act as the independent {role_name}. Search and open decisive public "
+                    "sources, propose one specific candidate, test every hard clue and relation "
+                    "direction, report unresolved gaps, and return citation URLs."
+                )
+            elif tag_folded not in query.casefold():
+                query = f"{tag} {query}"
+            normalized = {
+                "query": query,
+                "context": str(request.get("context") or context).strip(),
+            }
+            system = str(request.get("system") or "").strip()
+            if system:
+                normalized["system"] = system
+            if required_request_task_mode:
+                normalized["task_mode"] = required_request_task_mode
+            elif request.get("task_mode"):
+                normalized["task_mode"] = request["task_mode"]
+            tagged_requests.append(normalized)
+        return {"requests": tagged_requests}
+
+    if len(requests) >= target:
+        if required_request_task_mode:
+            for request in requests[:4]:
+                request["task_mode"] = required_request_task_mode
+        return {"requests": requests[:4]}
     existing_text = "\n".join(
         str(value)
         for request in requests
@@ -431,6 +483,8 @@ def canonicalize_tool_call(
     required_urls: list[str] | None = None,
     minimum_batch_size: int | None = None,
     external_context: str | None = None,
+    required_request_tags: list[str] | None = None,
+    required_request_task_mode: str | None = None,
 ) -> tuple[AgentAction, dict[str, Any]]:
     """Return a validated action and the canonical OpenAI tool-call representation."""
 
@@ -506,6 +560,8 @@ def canonicalize_tool_call(
             payload,
             minimum_batch_size=minimum_batch_size,
             fallback_context=external_context,
+            required_request_tags=required_request_tags,
+            required_request_task_mode=required_request_task_mode,
         )
     _validate_payload(name, payload)
     action = AgentAction(action=name, payload=payload)  # type: ignore[arg-type]

@@ -556,6 +556,53 @@ def test_strategy_queries_from_external_result_extracts_exact_plan() -> None:
     ]
 
 
+def test_candidate_urls_from_result_round_robins_helpers_and_search_queries() -> None:
+    helper_result = {
+        "consultations": [
+            {
+                "citations": [
+                    "https://archive.example/a",
+                    "https://archive.example/a2",
+                ]
+            },
+            {"citations": ["https://museum.example/b"]},
+            {
+                "content": (
+                    "Fallback evidence: https://journal.example/c#passage and "
+                    "https://journal.example/c#duplicate"
+                )
+            },
+        ]
+    }
+    assert AgentRunner._candidate_urls_from_result(helper_result, limit=4) == [
+        "https://archive.example/a",
+        "https://museum.example/b",
+        "https://archive.example/a2",
+        "https://journal.example/c",
+    ]
+
+    search_result = {
+        "searches": [
+            {
+                "query": "first route",
+                "results": [
+                    {"url": "https://one.example/1"},
+                    {"url": "https://one.example/2"},
+                ],
+            },
+            {
+                "query": "second route",
+                "results": [{"url": "https://two.example/1"}],
+            },
+        ]
+    }
+    assert AgentRunner._candidate_urls_from_result(search_result, limit=3) == [
+        "https://one.example/1",
+        "https://two.example/1",
+        "https://one.example/2",
+    ]
+
+
 def test_scripted_guidance_step_requires_one_unique_role_tag_per_request() -> None:
     step = {
         "allowed_actions": ["ask_external_model"],
@@ -1454,9 +1501,15 @@ def test_benchmark_routing_headers_spread_rows_but_keep_each_chain_sticky() -> N
     assert helper_headers["X-FRL-KV-Cohort-Id"] == (
         "bc250-" + hashlib.sha256(b"campaign-run:star2-helpers").hexdigest()[:20]
     )
-    assert helper_headers["X-FRL-KV-Cohort-Index"] == str(
-        int(hashlib.sha256(helper_namespace.encode()).hexdigest()[:12], 16)
-    )
+    assert helper_headers["X-FRL-KV-Cohort-Index"] == str(23 * 4)
+
+    sibling_indexes = {
+        AgentRunner._routing_headers(namespace + f":star2-agent:{index}")[
+            "X-FRL-KV-Cohort-Index"
+        ]
+        for index in range(1, 5)
+    }
+    assert sibling_indexes == {str(23 * 4 + offset) for offset in range(4)}
 
 
 def test_explicit_backend_pool_distributes_and_pins_independent_chains() -> None:

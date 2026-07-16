@@ -603,6 +603,16 @@ class AgentRunner:
                     if current_scripted_step is not None
                     else None
                 )
+                required_request_tags = (
+                    current_scripted_step.get("required_request_tags")
+                    if current_scripted_step is not None
+                    else None
+                )
+                required_request_task_mode = (
+                    current_scripted_step.get("required_request_task_mode")
+                    if current_scripted_step is not None
+                    else None
+                )
                 external_context = None
                 if scripted_required_action == "ask_external_model":
                     external_context = truncate_middle(
@@ -627,6 +637,16 @@ class AgentRunner:
                             minimum_batch_size if isinstance(minimum_batch_size, int) else None
                         ),
                         external_context=external_context,
+                        required_request_tags=(
+                            required_request_tags
+                            if isinstance(required_request_tags, list)
+                            else None
+                        ),
+                        required_request_task_mode=(
+                            required_request_task_mode
+                            if isinstance(required_request_task_mode, str)
+                            else None
+                        ),
                     )
                 except ProtocolError:
                     # Preserve malformed evidence for the ordinary protocol-retry path.
@@ -2215,6 +2235,37 @@ class AgentRunner:
                         required_queries=strategy_queries,
                     )
 
+            if (
+                current_scripted_step is not None
+                and scripted_guidance_steps is not None
+                and scripted_step_index + 1 < len(scripted_guidance_steps)
+                and action.action in {"search", "search_many", "ask_external_model"}
+            ):
+                next_step = scripted_guidance_steps[scripted_step_index + 1]
+                if next_step.get("allowed_actions") == ["open_many"]:
+                    source_urls = self._candidate_urls_from_result(
+                        result,
+                        limit=self.agent_config.max_batch_size,
+                    )
+                    if source_urls:
+                        next_step["required_urls"] = source_urls
+                        next_step["minimum_batch_size"] = len(source_urls)
+                        next_step["maximum_batch_size"] = len(source_urls)
+                        next_step["instruction"] = (
+                            str(next_step.get("instruction") or "").rstrip()
+                            + " Open exactly the public result URLs below. They came from the "
+                            "immediately preceding evidence wave; opening them does not endorse "
+                            "their claims.\n"
+                            + canonical_json({"required_source_urls": source_urls})
+                        )
+                        self._emit(
+                            "scripted_guidance_dynamic_contract_bound",
+                            step=step,
+                            source_scripted_step_id=current_scripted_step.get("id"),
+                            target_scripted_step_id=next_step.get("id"),
+                            required_urls=source_urls,
+                        )
+
             if result.get("ok") and action.action in {
                 "search",
                 "search_many",
@@ -2384,11 +2435,19 @@ class AgentRunner:
         if suffix:
             cohort_material += ":star2-helpers"
         cohort_id = hashlib.sha256(cohort_material.encode("utf-8")).hexdigest()[:20]
-        cohort_index = (
-            int(hashlib.sha256(namespace_material.encode("utf-8")).hexdigest()[:12], 16)
-            if suffix
-            else int(benchmark_namespace.group("rank"))
-        )
+        rank = int(benchmark_namespace.group("rank"))
+        helper = re.search(r":star2-(?:agent|review):(\d+)(?:$|:)", suffix)
+        if helper is not None:
+            # Four sibling roles per item map to distinct cohort slots. Across
+            # rows this evenly covers an eight-lane Star-2 fleet.
+            cohort_index = rank * 4 + max(0, int(helper.group(1)) - 1)
+        elif suffix:
+            cohort_index = int(
+                hashlib.sha256(namespace_material.encode("utf-8")).hexdigest()[:12],
+                16,
+            )
+        else:
+            cohort_index = rank
         headers.update(
             {
                 "X-FRL-KV-Cohort-Id": f"bc250-{cohort_id}",
@@ -2764,6 +2823,109 @@ class AgentRunner:
                 if 3 <= len(queries) <= 7:
                     return queries
         return []
+
+    @classmethod
+    def _candidate_urls_from_result(
+        cls,
+        result: dict[str, Any],
+        *,
+        limit: int,
+    ) -> list[str]:
+        """Select diverse public result URLs for the next teacher-forced open step."""
+
+        if limit <= 0:
+            return []
+        selected: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: Any) -> None:
+            if len(selected) >= limit or not isinstance(value, str):
+                return
+            match = _PUBLIC_URL.search(value.strip())
+            if match is None:
+                return
+            url = match.group(0).rstrip(".,;:!?)\"'")
+            parsed = urlsplit(url)
+            if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
+                return
+            normalized = urlunsplit(
+                (
+                    parsed.scheme.casefold(),
+                    parsed.netloc.casefold(),
+                    parsed.path or "/",
+                    parsed.query,
+                    "",
+                )
+            )
+            key = normalized.rstrip("/").casefold()
+            if key in seen:
+                return
+            seen.add(key)
+            selected.append(urlunsplit(parsed._replace(fragment="")))
+
+        # Preserve role diversity: take one citation from every helper before a
+        # second citation from any one helper.
+        consultations = result.get("consultations")
+        citation_groups: list[list[str]] = []
+        if isinstance(consultations, list):
+            for consultation in consultations:
+                if not isinstance(consultation, dict):
+                    continue
+                citations = consultation.get("citations")
+                if isinstance(citations, list):
+                    citation_groups.append(
+                        [str(value) for value in citations if isinstance(value, str)]
+                    )
+            max_citations = max((len(values) for values in citation_groups), default=0)
+            for offset in range(max_citations):
+                for values in citation_groups:
+                    if offset < len(values):
+                        add(values[offset])
+                    if len(selected) >= limit:
+                        return selected
+
+        # Search results are grouped by query. Round-robin across query groups
+        # so one noisy query cannot consume the entire inspection batch.
+        query_groups: list[list[dict[str, Any]]] = []
+        search_results = result.get("searches")
+        if not isinstance(search_results, list):
+            search_results = result.get("results")
+        if isinstance(search_results, list):
+            for group in search_results:
+                if not isinstance(group, dict):
+                    continue
+                hits = group.get("results")
+                if isinstance(hits, list):
+                    query_groups.append([hit for hit in hits if isinstance(hit, dict)])
+            max_hits = max((len(values) for values in query_groups), default=0)
+            for offset in range(max_hits):
+                for values in query_groups:
+                    if offset < len(values):
+                        add(values[offset].get("url"))
+                    if len(selected) >= limit:
+                        return selected
+
+        highlights = result.get("verified_evidence_highlights")
+        if isinstance(highlights, dict):
+            passages = highlights.get("passages")
+            if isinstance(passages, list):
+                for passage in passages:
+                    if isinstance(passage, dict):
+                        add(passage.get("url"))
+                    if len(selected) >= limit:
+                        return selected
+
+        # Some helper failures preserve useful URLs only in their text. Use
+        # those last, after structured citations and ranked search hits.
+        if isinstance(consultations, list):
+            for consultation in consultations:
+                if not isinstance(consultation, dict):
+                    continue
+                for match in _PUBLIC_URL.finditer(str(consultation.get("content") or "")):
+                    add(match.group(0))
+                    if len(selected) >= limit:
+                        return selected
+        return selected
 
     @classmethod
     def _blocking_guidance_review_payload(cls, result: dict[str, Any]) -> dict[str, Any]:

@@ -236,6 +236,11 @@ class AgentExternalModelBroker:
             )
         question_parts = [
             "Act as an independent research helper for another agent.",
+            (
+                "You are a leaf research worker. You cannot delegate, ask another model, or call "
+                "ask_external_model. Complete the assigned research yourself with search, open, "
+                "find, notes, and the final action."
+            ),
             "Use the supplied public-web tools whenever they can verify a material claim.",
             (
                 "Before the first search, use your own knowledge only to form several specific "
@@ -688,7 +693,10 @@ class AgentExternalModelBroker:
             async with self._semaphore:
                 response = await self.client.chat(
                     messages,
-                    request_headers={"X-FRL-Conversation-Id": conversation_id},
+                    request_headers={
+                        **AgentRunner._routing_headers(namespace),
+                        "X-FRL-Conversation-Id": conversation_id,
+                    },
                 )
         except Exception as exc:  # noqa: BLE001 - a review failure must fail closed
             return {

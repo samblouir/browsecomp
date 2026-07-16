@@ -27,6 +27,7 @@ from browsecomp250.guided_training import (
     training_message_quality,
 )
 from browsecomp250.llm import OpenAICompatibleClient, settings_from_model_config
+from browsecomp250.oracle_sources import apply_redacted_source_cache
 from browsecomp250.prompts import AGENT_SYSTEM_PROMPT
 from browsecomp250.search import create_search_provider
 from browsecomp250.util import atomic_write_json, atomic_write_text, canonical_json, utc_now_iso
@@ -51,6 +52,15 @@ GENERIC_INITIAL_GUIDANCE = (
 )
 
 
+def guided_request_namespace(
+    *,
+    run_id: str,
+    row_index: int,
+    attempt: int,
+) -> str:
+    return f"{run_id}:bc250-{row_index:04d}-row-{row_index:04d}:attempt-{attempt}"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Create private one-plan-step-per-turn training traces for all BrowseComp guides."
@@ -70,6 +80,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grader-endpoint", default="http://127.0.0.1:8003/v1")
     parser.add_argument("--grader-model", default="frontierrl/star-2")
     parser.add_argument("--deterministic-only", action="store_true")
+    parser.add_argument(
+        "--oracle-source-cache",
+        type=Path,
+        help="Private answer-redacted public-source cache produced by bootstrap_oracle_sources.py",
+    )
     return parser.parse_args()
 
 
@@ -481,6 +496,11 @@ def worker_resources(
     config.external_model.top_p = 0.95
     config.external_model.max_output_tokens = 16384
     config.external_model.agent_max_denoising_steps = 48
+    config.external_model.agent_max_steps = max(config.external_model.agent_max_steps, 20)
+    config.external_model.agent_force_final_after_seconds = max(
+        config.external_model.agent_force_final_after_seconds,
+        900,
+    )
     config.external_model.agent_routing_backend_pool = []
     model_client = OpenAICompatibleClient(settings_from_model_config(config.model))
     search_provider = create_search_provider(config.search)
@@ -632,8 +652,10 @@ async def run_attempt(
         async with asyncio.timeout(timeout_seconds):
             outcome = await runner.run(
                 question,
-                request_namespace=(
-                    f"full-guide:{item['item_id']}:attempt-{attempt}:worker-{resources.worker_id}"
+                request_namespace=guided_request_namespace(
+                    run_id=item_dir.parent.parent.name,
+                    row_index=int(item["row_index"]),
+                    attempt=attempt,
                 ),
                 initial_guidance=initial_guidance,
                 review_guidance=review_guidance,
@@ -768,6 +790,13 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         load_dotenv(args.env_file, override=False)
     base_config = load_config(args.config)
     route_records, oracle_records = load_guide_records(args.guide_root.resolve())
+    source_cache_applied = 0
+    if args.oracle_source_cache is not None:
+        source_cache = json.loads(args.oracle_source_cache.read_text(encoding="utf-8"))
+        oracle_records, source_cache_applied = apply_redacted_source_cache(
+            oracle_records,
+            source_cache,
+        )
     indices = parse_indices(args.indices, len(route_records))
     if args.limit is not None:
         indices = indices[: args.limit]
@@ -781,6 +810,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         indices=indices,
         max_attempts=args.max_attempts,
     )
+    preflight["answer_redacted_source_cache_rows_applied"] = source_cache_applied
     star7_endpoints = endpoint_list(args.star7_endpoints)
     star2_endpoints = endpoint_list(args.star2_endpoints)
     concurrency = min(args.concurrency, len(star7_endpoints), len(indices))

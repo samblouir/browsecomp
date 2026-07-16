@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from browsecomp250.agent.runner import SCRIPTED_FINAL_SYSTEM_PROMPT
+from browsecomp250.agent.runner import SCRIPTED_FINAL_SYSTEM_PROMPT, AgentRunner
 from browsecomp250.config import load_config
 from browsecomp250.guided_training import (
     audit_system_messages,
@@ -17,7 +17,7 @@ from browsecomp250.question_planning import (
     compile_question_discovery_profile,
     infer_answer_contract,
 )
-from scripts.run_full_guided_training import worker_resources
+from scripts.run_full_guided_training import guided_request_namespace, worker_resources
 
 
 def _records(*, sources: bool = True):
@@ -137,6 +137,14 @@ def test_compiler_redacts_private_label_but_keeps_public_source_url() -> None:
     assert any(step["id"] == "candidate_verification_source_inspection" for step in steps)
     assert any(step["id"] == "pre_final_repair_source_inspection" for step in steps)
     assert steps[-1]["allowed_actions"] == ["final"]
+
+
+def test_guided_run_namespace_uses_router_cohort_contract() -> None:
+    namespace = guided_request_namespace(run_id="guided-v1", row_index=15, attempt=2)
+
+    assert namespace == "guided-v1:bc250-0015-row-0015:attempt-2"
+    headers = AgentRunner._routing_headers(namespace)
+    assert headers["X-FRL-KV-Cohort-Index"] == "15"
 
 
 def test_label_checker_ignores_public_url_and_does_not_match_word_substrings() -> None:
@@ -284,6 +292,32 @@ def test_question_first_profile_rejects_generic_route_anchors_and_geography_bias
         '"person interviewed first Tuesday particular month 2008 2018"' in query
         for query in all_queries
     )
+
+
+def test_candidate_verification_replaces_one_word_guide_fragments() -> None:
+    route, full = _records(sources=False)
+    question = (
+        "A person was interviewed on the first Tuesday between 2008 and 2018. The inquiry "
+        "guide had nine questions about an urban planner and a boulevard. Less than a year "
+        "later, students joined the planner on a university tour. What time was the first stop?"
+    )
+    route["question_model"]["lexical_anchors"] = ["Tuesday", "Less", "These", "Using"]
+    route["item"] = {"question_text": question, "topic": "Geography"}
+    full["item"] = route["item"]
+    full["oracle"]["answer_conditioned_verification_queries"] = [
+        '"Secret Person" "Tuesday"',
+        '"Secret Person" "Less"',
+        '"Secret Person" "Using"',
+    ]
+
+    steps, _ = compile_guided_steps(route, full)
+    verification = next(
+        step for step in steps if step["id"] == "candidate_specific_verification"
+    )["instruction"]
+
+    assert '"${candidate}" "Tuesday"' not in verification
+    assert '"${candidate}" "Less"' not in verification
+    assert "student tour itinerary first stop" in verification
 
 
 def test_document_and_designer_question_uses_native_document_sources_not_art_museums() -> None:

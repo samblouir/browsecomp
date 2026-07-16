@@ -258,6 +258,47 @@ def test_forced_external_step_fills_four_distinct_research_roles() -> None:
     assert json.loads(canonical["function"]["arguments"]) == action.payload
 
 
+def test_forced_external_step_normalizes_exact_required_role_tags_and_mode() -> None:
+    tags = [
+        "[role:rare_anchor_solver]",
+        "[role:relation_graph_inverter]",
+        "[role:alternate_candidate_falsifier]",
+        "[role:evidence_canonical_auditor]",
+    ]
+    action, _ = canonicalize_tool_call(
+        {
+            "function": {
+                "name": "ask_external_model",
+                "arguments": json.dumps(
+                    {
+                        "requests": [
+                            {
+                                "query": "Research the supplied question independently.",
+                                "context": "Original question and public evidence.",
+                            }
+                        ]
+                    }
+                ),
+            }
+        },
+        expected_action="ask_external_model",
+        minimum_batch_size=4,
+        external_context="Fallback context.",
+        required_request_tags=tags,
+        required_request_task_mode="research",
+    )
+
+    requests = action.payload["requests"]
+    assert len(requests) == 4
+    assert all(request["task_mode"] == "research" for request in requests)
+    assert all(request["context"] == "Original question and public evidence." for request in requests)
+    assert [
+        next(tag for tag in tags if tag in request["query"])
+        for request in requests
+    ] == tags
+    assert all(sum(tag in request["query"] for tag in tags) == 1 for request in requests)
+
+
 def test_forced_external_step_recovers_wrong_known_action_from_public_context() -> None:
     action, _ = canonicalize_tool_call(
         {
