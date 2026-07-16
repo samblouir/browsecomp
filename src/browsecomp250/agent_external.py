@@ -231,9 +231,11 @@ class AgentExternalModelBroker:
                 content += f"\n\nRecommended exact answer: {outcome.exact_answer}"
             if outcome.citations:
                 content += "\n\nSources:\n" + "\n".join(outcome.citations)
-        return {
-            "ok": outcome.status == "completed" and bool(content),
-            "status": "succeeded" if outcome.status == "completed" and content else "failed",
+        citations_satisfied = bool(outcome.citations) or not self.agent_config.require_citations
+        succeeded = outcome.status == "completed" and bool(content) and citations_satisfied
+        result = {
+            "ok": succeeded,
+            "status": "succeeded" if succeeded else "failed",
             "request_id": namespace,
             "provider": "frontierrl-agent",
             "model": self.model_config.model,
@@ -257,6 +259,9 @@ class AgentExternalModelBroker:
                 "errors": outcome.errors[-3:],
             },
         }
+        if not citations_satisfied:
+            result["error"] = "Star helper final answer omitted required citations"
+        return result
 
     @staticmethod
     def _search_queries_from_transcript(transcript: list[dict[str, Any]]) -> list[str]:

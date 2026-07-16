@@ -2286,6 +2286,9 @@ class AgentRunner:
                     "matched source showing that a required outcome did not occur is a contradiction, "
                     "not mere uncertainty. For an answer requested exactly as printed in a dated "
                     "article, prefer the article's explicit name form over historical guesswork. "
+                    "Before accepting a source, verify that multiple independent anchors identify "
+                    "the same underlying event, entity, or publication; reject coincidental pages "
+                    "that share only the requested phrase or answer type. "
                     "This is a forced-answer task: return exactly one final JSON action with a "
                     "concrete answer of the requested type. Unresolved evidence lowers confidence "
                     "but never permits an abstention or meta-answer. Before finalizing, use public "
@@ -2351,7 +2354,8 @@ class AgentRunner:
                     "against direct evidence. Recheck the underlying entity before selecting an "
                     "attributed person, and treat an exact source's negative result as affirmative "
                     "contradiction rather than ambiguity. Do not let universal skepticism veto the "
-                    "best-supported candidate. Return the best concrete exact answer now."
+                    "best-supported candidate. A hard clue labeled merely implied or likely is not "
+                    "direct support. Return the best concrete exact answer now."
                 ),
                 "context": adjudication_context,
             }
@@ -2633,7 +2637,10 @@ class AgentRunner:
                     "the supplied question, evidence, and ordinary public knowledge. Use public "
                     "web research if it is available to you. Clearly label memory-based leads as "
                     "unverified, do not fabricate URLs, and never claim high confidence without "
-                    "direct constraint-matching evidence."
+                    "direct constraint-matching evidence. Reject a page that matches only the "
+                    "answer phrase but not multiple independent anchors from the original "
+                    "question; a same-named event, tour, person, or publication is not identity "
+                    "evidence."
                 ),
                 "query": f"Role: {role}\n\n{task}",
                 "context": context,

@@ -72,6 +72,13 @@ class _FakeRunner:
         )
 
 
+class _NoCitationRunner(_FakeRunner):
+    async def run(self, question: str, *, request_namespace: str) -> AgentOutcome:
+        outcome = await super().run(question, request_namespace=request_namespace)
+        outcome.citations = []
+        return outcome
+
+
 @pytest.mark.asyncio
 async def test_agent_external_broker_forces_star2_tools_and_runs_concurrently() -> None:
     _FakeRunner.configurations = []
@@ -161,6 +168,26 @@ async def test_agent_external_broker_normalizes_final_action_contract() -> None:
     )
     assert '"action":"final"' in result[0]["content"]
     assert '"exact_answer":"Ada"' in result[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_agent_external_broker_rejects_uncited_helper_final() -> None:
+    broker = AgentExternalModelBroker(
+        ExternalModelConfig(enabled=True, mode="agent", agent_api_key="real-key"),
+        AgentConfig(require_citations=True),
+        BrowserConfig(),
+        search_provider=object(),
+        page_fetcher=object(),
+        model_client=_FakeModelClient(),
+        runner_factory=_NoCitationRunner,
+    )
+    result = await broker.ask_many(
+        [{"query": "Research and answer with sources"}],
+        request_namespace="test:no-citation",
+    )
+    assert result[0]["ok"] is False
+    assert result[0]["status"] == "failed"
+    assert result[0]["error"] == "Star helper final answer omitted required citations"
 
 
 def test_agent_external_broker_extracts_executed_search_queries() -> None:
