@@ -480,7 +480,6 @@ def worker_resources(
         "parallel_tool_calls": False,
         "vllm_xargs": {"frontierrl_max_denoising_steps": 48},
     }
-    config.search.provider = "brave"
     config.search.live_preflight = False
     # Correctness training must fail closed: a candidate is not exportable merely because
     # Star-7 and its reviewers repeat it. At least one cited, inspected page must name it.

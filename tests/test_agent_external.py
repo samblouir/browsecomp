@@ -102,11 +102,11 @@ class _ValidStrategyRunner(_NoCitationRunner):
     async def run(self, question: str, *, request_namespace: str) -> AgentOutcome:
         outcome = await super().run(question, request_namespace=request_namespace)
         outcome.explanation = (
-            '{"hypotheses":["Jan Gehl","Boulevard Anspach"],'
-            '"queries":["Jan Gehl pedestrian archive","Boulevard Anspach planning history",'
-            '"Brussels student itinerary PDF"],'
-            '"source_classes":["municipal archive","university itinerary"],'
-            '"discriminators":["project identity","tour schedule"]}'
+            '{"hypotheses":["Ada Lovelace","Charles Babbage"],'
+            '"queries":["Ada Lovelace archive correspondence",'
+            '"Charles Babbage analytical engine notes","Science Museum engine provenance"],'
+            '"source_classes":["archival correspondence","museum catalog"],'
+            '"discriminators":["authorship date","artifact provenance"]}'
         )
         outcome.exact_answer = "query strategy"
         outcome.response_text = outcome.explanation
@@ -334,15 +334,29 @@ def test_agent_external_strategy_quality_rejects_generic_clue_paraphrases() -> N
         '"discriminators":["time","place"]}'
     )
     specific = (
-        '{"hypotheses":["Jan Gehl","Boulevard Anspach"],'
-        '"queries":["Jan Gehl pedestrian archive","Boulevard Anspach planning history",'
-        '"Brussels student itinerary PDF"],'
-        '"source_classes":["municipal archive","university itinerary"],'
-        '"discriminators":["project identity","tour schedule"]}'
+        '{"hypotheses":["Ada Lovelace","Charles Babbage"],'
+        '"queries":["Ada Lovelace archive correspondence",'
+        '"Charles Babbage analytical engine notes","Science Museum engine provenance"],'
+        '"source_classes":["archival correspondence","museum catalog"],'
+        '"discriminators":["authorship date","artifact provenance"]}'
     )
 
     assert AgentExternalModelBroker._strategy_quality_error(generic) is not None
     assert AgentExternalModelBroker._strategy_quality_error(specific) is None
+
+
+def test_agent_external_strategy_accepts_concrete_relation_branches_without_names() -> None:
+    strategy = (
+        '{"hypotheses":["Municipal interview archive keyed by protocol wording",'
+        '"University field-trip itinerary keyed by first-stop schedule"],'
+        '"queries":["nine-question protocol municipal interview archive",'
+        '"student field trip first stop itinerary PDF",'
+        '"pedestrian project interview transcript archive"],'
+        '"source_classes":["municipal interview archive","university itinerary"],'
+        '"discriminators":["protocol wording","first-stop schedule"]}'
+    )
+
+    assert AgentExternalModelBroker._strategy_quality_error(strategy) is None
 
 
 def test_agent_external_strategy_rejects_named_hypotheses_not_used_in_queries() -> None:
@@ -375,7 +389,7 @@ def test_agent_external_strategy_rejects_capitalized_task_paraphrases() -> None:
         source_text=source,
     )
     assert error is not None
-    assert "concrete candidate hypotheses" in error
+    assert "concrete candidate or source-relation hypotheses" in error
 
 
 def test_agent_external_strategy_quality_is_not_tied_to_one_question_domain() -> None:

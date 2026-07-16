@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import shlex
+from dataclasses import dataclass
 from urllib.parse import unquote, urlencode, urlparse
 
 from bs4 import BeautifulSoup
@@ -19,6 +20,16 @@ _USER_AGENT = (
 )
 
 
+@dataclass
+class _HostThrottle:
+    semaphore: asyncio.Semaphore
+    pace_lock: asyncio.Lock
+    next_request_at: float = 0.0
+
+
+_HOST_THROTTLES: dict[tuple[int, str], _HostThrottle] = {}
+
+
 class BraveSSHSearchProvider(SearchProvider):
     """Fetch Brave's server-rendered organic results through an authorized SSH host."""
 
@@ -27,9 +38,16 @@ class BraveSSHSearchProvider(SearchProvider):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._request_semaphore = asyncio.Semaphore(self.config.brave_ssh_max_concurrency)
-        self._pace_lock = asyncio.Lock()
-        self._next_request_at = 0.0
+        loop_id = id(asyncio.get_running_loop())
+        throttle_key = (loop_id, self.config.brave_ssh_host.strip())
+        throttle = _HOST_THROTTLES.get(throttle_key)
+        if throttle is None:
+            throttle = _HostThrottle(
+                semaphore=asyncio.Semaphore(self.config.brave_ssh_max_concurrency),
+                pace_lock=asyncio.Lock(),
+            )
+            _HOST_THROTTLES[throttle_key] = throttle
+        self._host_throttle = throttle
 
     async def _search_live(self, query: str, count: int, offset: int) -> list[SearchResult]:
         query = " ".join(_CONTROL_TOKEN.sub(" ", query).split())
@@ -56,7 +74,7 @@ class BraveSSHSearchProvider(SearchProvider):
             ]
         )
 
-        async with self._request_semaphore:
+        async with self._host_throttle.semaphore:
             await self._wait_for_request_slot()
             process = await asyncio.create_subprocess_exec(
                 self.config.brave_ssh_bin,
@@ -105,18 +123,20 @@ class BraveSSHSearchProvider(SearchProvider):
         )
 
     async def _wait_for_request_slot(self) -> None:
-        async with self._pace_lock:
+        async with self._host_throttle.pace_lock:
             loop = asyncio.get_running_loop()
-            delay = max(0.0, self._next_request_at - loop.time())
+            delay = max(0.0, self._host_throttle.next_request_at - loop.time())
             if delay:
                 await asyncio.sleep(delay)
-            self._next_request_at = loop.time() + self.config.brave_ssh_min_interval_seconds
+            self._host_throttle.next_request_at = (
+                loop.time() + self.config.brave_ssh_min_interval_seconds
+            )
 
     async def _extend_cooldown(self) -> None:
-        async with self._pace_lock:
+        async with self._host_throttle.pace_lock:
             loop = asyncio.get_running_loop()
-            self._next_request_at = max(
-                self._next_request_at,
+            self._host_throttle.next_request_at = max(
+                self._host_throttle.next_request_at,
                 loop.time() + self.config.brave_ssh_error_cooldown_seconds,
             )
 

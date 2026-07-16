@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import pytest
+
 from browsecomp250.oracle_sources import (
     _is_common_numeric_answer,
     _question_evidence_terms,
     apply_redacted_source_cache,
+    discover_redacted_public_sources,
     private_source_queries,
     redact_private_answer,
 )
+from browsecomp250.search.base import SearchError
 
 
 def _record() -> dict:
@@ -99,3 +103,25 @@ def test_source_cache_applies_only_to_rows_without_mapped_sources() -> None:
         {"url": "https://original.example"}
     ]
     assert empty["oracle"]["evidence_sources"] == []
+
+
+@pytest.mark.asyncio
+async def test_source_bootstrap_distinguishes_provider_failure_from_no_results() -> None:
+    class FailedSearch:
+        async def search_many(self, queries, *, count):
+            del count
+            return [SearchError("HTTP 402") for _ in queries]
+
+    class UnusedBrowser:
+        async def fetch(self, url):
+            raise AssertionError(f"unexpected fetch: {url}")
+
+    sources, metrics = await discover_redacted_public_sources(
+        _record(),
+        search=FailedSearch(),
+        browser=UnusedBrowser(),
+    )
+
+    assert sources == []
+    assert metrics["search_error_count"] == metrics["query_count"]
+    assert metrics["search_error_types"] == {"SearchError": metrics["query_count"]}

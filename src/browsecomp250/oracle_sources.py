@@ -311,10 +311,18 @@ async def discover_redacted_public_sources(
     raw_searches: list[dict[str, Any]] = []
     candidates: dict[str, SearchResult] = {}
     question_terms = _question_evidence_terms(question, aliases)
+    search_error_count = 0
+    search_error_types: dict[str, int] = {}
+    empty_search_batches = 0
     for query, batch in zip(queries, batches, strict=True):
         if isinstance(batch, Exception):
-            raw_searches.append({"query": query, "error": type(batch).__name__})
+            search_error_count += 1
+            error_name = type(batch).__name__
+            search_error_types[error_name] = search_error_types.get(error_name, 0) + 1
+            raw_searches.append({"query": query, "error": error_name})
             continue
+        if not batch:
+            empty_search_batches += 1
         raw_searches.append(
             {"query": query, "results": [value.as_prompt_dict() for value in batch]}
         )
@@ -416,6 +424,9 @@ async def discover_redacted_public_sources(
             break
     return selected, {
         "query_count": len(queries),
+        "search_error_count": search_error_count,
+        "search_error_types": search_error_types,
+        "empty_search_batches": empty_search_batches,
         "candidate_count": len(candidates),
         "fetched_count": sum(not isinstance(value, Exception) for value in fetched),
         "verified_count": len(verified),

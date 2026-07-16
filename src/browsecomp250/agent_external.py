@@ -90,13 +90,13 @@ answer. Read the supplied question, evidence, and prior queries, then return exa
 final tool call immediately without browsing. Put the requested JSON object verbatim in final.explanation, set
 final.exact_answer to "query strategy", confidence to a calibrated number, and citations to an
 empty list. Never search for benchmark dumps, canaries, leaked questions, or reference answers.
-A hypothesis must name a concrete person, place, project, institution, publication, or source
-collection using proper nouns; a paraphrase such as "the urban planner" is not a hypothesis. Put
-two to five alternatives in separate hypotheses array elements, with one candidate identity per
-element. At least two queries must test named hypotheses and use different entity-relation routes
-instead of repeating the clue bundle. A retry must directly repair the stated rejection reason.
-Capitalizing role nouns copied from the task does not create a named hypothesis: introduce concrete
-proper names that add retrieval information not already present in the supplied task.
+Put two to five concrete alternatives in separate hypotheses array elements. Use named people,
+places, projects, institutions, publications, or collections only when prior knowledge genuinely
+supports them. Otherwise define distinct source-and-relation branches, each with a source class,
+relation edge, and discriminator that adds retrieval information beyond the task wording. A
+paraphrase such as "the urban planner" is not a hypothesis. Queries must test the hypotheses through
+different entity-relation routes instead of repeating the clue bundle. A retry must directly repair
+the stated rejection reason.
 """.strip()
 
 
@@ -391,7 +391,7 @@ class AgentExternalModelBroker:
         if not strategy_error:
             result["strategy_attempts"] = strategy_retry + 1
             return result
-        if strategy_retry < 2:
+        if strategy_retry < 1:
             retry_request = dict(request)
             retry_request["_strategy_retry"] = strategy_retry + 1
             retry_request["_strategy_source_text"] = strategy_source_text
@@ -399,10 +399,10 @@ class AgentExternalModelBroker:
                 query
                 + "\n\nThe previous strategy was rejected by the answer-blind quality gate: "
                 + strategy_error
-                + ". Return a materially different JSON plan. Name concrete proper-noun "
-                "hypotheses from distinct domains or geographies, then write short queries around "
-                "those names, source-native terminology, and different relation edges. Do not copy "
-                "the clue sentences. Rejected response:\n"
+                + ". Return a materially different JSON plan. Use evidence-grounded proper names "
+                "when available; otherwise use concrete source-and-relation branches with distinct "
+                "source classes and discriminators. Write short source-native queries across "
+                "different relation edges. Do not copy the clue sentences. Rejected response:\n"
                 + str(result.get("content") or "")[:6_000]
             )
             retry_result = await self._ask_one(
@@ -497,7 +497,11 @@ class AgentExternalModelBroker:
                     continue
                 if all(word.casefold() in _STRATEGY_GENERIC_ENTITY_WORDS for word in words):
                     continue
-                if not any(word[:1].isupper() for word in words if word):
+                if not quoted and not any(
+                    word[:1].isupper()
+                    and word.casefold() not in _STRATEGY_GENERIC_ENTITY_WORDS
+                    for word in words[1:]
+                ):
                     continue
                 if sum(character.isdigit() for character in candidate) > len(candidate) / 3:
                     continue
@@ -580,32 +584,34 @@ class AgentExternalModelBroker:
             for value in payload.get("discriminators") or []
             if str(value).strip()
         ]
+        hypotheses = [
+            " ".join(str(value).split()).strip()
+            for value in payload.get("hypotheses") or []
+            if str(value).strip()
+        ]
+        if not 2 <= len(hypotheses) <= 5:
+            return "hypotheses must contain between two and five concrete branches"
+        hypothesis_term_sets = [
+            {
+                value.casefold()
+                for value in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9'’-]+", hypothesis)
+                if value.casefold() not in _STRATEGY_GENERIC_ENTITY_WORDS
+                and value.casefold() not in _STRATEGY_QUERY_STOPWORDS
+            }
+            for hypothesis in hypotheses
+        ]
         candidate_names = cls._strategy_candidate_names(payload)
-        if len(candidate_names) < 2:
-            return "fewer than two concrete candidate hypotheses"
+        if max(
+            sum(len(terms) >= 2 for terms in hypothesis_term_sets),
+            len(candidate_names),
+        ) < 2:
+            return "fewer than two concrete candidate or source-relation hypotheses"
         source_terms = {
             value.casefold()
             for value in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", source_text)
         }
-        novel_candidates = 0
-        for candidate in candidate_names:
-            candidate_terms = {
-                value.casefold()
-                for value in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", candidate)
-                if value.casefold() not in _STRATEGY_GENERIC_ENTITY_WORDS
-            }
-            if candidate_terms - source_terms:
-                novel_candidates += 1
-        if source_terms and novel_candidates < 2:
-            return "fewer than two hypotheses introduced concrete entity terms beyond the task clues"
-        named_tokens: set[str] = set()
-        for candidate in candidate_names:
-            for token in re.findall(r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]{2,}\b", candidate):
-                normalized = token.casefold()
-                if normalized not in _STRATEGY_GENERIC_ENTITY_WORDS:
-                    named_tokens.add(normalized)
-        if not named_tokens:
-            return "hypotheses paraphrased the clues instead of naming a concrete proper noun"
+        if source_terms and sum(bool(terms - source_terms) for terms in hypothesis_term_sets) < 2:
+            return "fewer than two hypotheses introduced retrieval terms beyond the task clues"
         if not 3 <= len(queries) <= 7:
             return "queries must contain between three and seven entries"
         normalized_queries = {" ".join(value.casefold().split()) for value in queries}
@@ -635,7 +641,7 @@ class AgentExternalModelBroker:
                 required_matches = 1 if len(candidate_terms) <= 2 else 2
                 if len(terms & candidate_terms) >= required_matches:
                     matched_candidates.add(candidate_index)
-        if len(matched_candidates) < 2:
+        if len(candidate_term_sets) >= 2 and len(matched_candidates) < 2:
             return "queries did not explicitly test two distinct named hypotheses"
         low_overlap_pairs = 0
         for left_index, left in enumerate(query_term_sets):

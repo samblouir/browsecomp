@@ -47,7 +47,7 @@ search:
   language: en
   safe_search: moderate
   timeout_seconds: 30
-  max_retries: 4
+  max_retries: ${BC250_SEARCH_MAX_RETRIES:-4}
   live_preflight: true
   live_preflight_query: OpenAI official website
   cache_mode: readwrite

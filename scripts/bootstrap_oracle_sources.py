@@ -39,7 +39,6 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     if args.env_file.exists():
         load_dotenv(args.env_file, override=False)
     config = load_config(args.config)
-    config.search.provider = "brave"
     config.search.live_preflight = False
     route_records, oracle_records = load_guide_records(args.guide_root.resolve())
     indices = parse_indices(args.indices, len(oracle_records))
@@ -65,6 +64,13 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 max_queries=args.max_queries,
                 max_sources=args.max_sources,
             )
+            if metrics.get("query_count") and metrics.get("search_error_count") == metrics.get(
+                "query_count"
+            ):
+                raise RuntimeError(
+                    f"row {index} source bootstrap lost every search query: "
+                    f"{metrics.get('search_error_types')}"
+                )
             candidate = json.loads(json.dumps(record))
             candidate.setdefault("oracle", {})["evidence_sources"] = sources
             steps, review = compile_guided_steps(route_records[index], candidate)
