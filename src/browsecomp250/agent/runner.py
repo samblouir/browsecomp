@@ -859,11 +859,23 @@ class AgentRunner:
                             str(rescue_action.payload.get("exact_answer") or ""),
                         )
                     )
-                    if answer_errors:
+                    evidence_errors: list[str] = []
+                    if self.agent_config.require_opened_citation_support:
+                        evidence_errors = self._final_evidence_constraint_errors(
+                            question,
+                            str(rescue_action.payload.get("exact_answer") or ""),
+                            rescue_action.payload.get("citations") or [],
+                            opened,
+                        )
+                    if answer_errors or evidence_errors:
+                        violations = [
+                            *(f"answer constraint: {error}" for error in answer_errors),
+                            *(f"evidence constraint: {error}" for error in evidence_errors),
+                        ]
                         pending_surface_constraint_correction = (
-                            "The independent finalizer proposed an answer that violates the "
-                            "question's answer constraints: "
-                            + "; ".join(answer_errors)
+                            "The independent finalizer proposed an answer that fails the same "
+                            "constraints as a normal final answer: "
+                            + "; ".join(violations)
                             + ". Do not accept or rationalize that candidate."
                         )
                         errors.append(pending_surface_constraint_correction)
@@ -872,12 +884,13 @@ class AgentRunner:
                             "ok": False,
                             "error": pending_surface_constraint_correction,
                             "answer_constraint_violations": answer_errors,
+                            "evidence_constraint_violations": evidence_errors,
                         }
                         rescue_action = None
                         self._emit(
                             "automatic_finalization_rescue_rejected",
                             step=step,
-                            violations=answer_errors,
+                            violations=violations,
                             result=rescue_result,
                         )
                 if rescue_action is not None:

@@ -350,6 +350,30 @@ class BudgetRescueModel:
         return None
 
 
+class BudgetRescueThenUnsupportedFinalModel:
+    def __init__(self):
+        self.responses = iter(
+            [
+                ModelResponse(content='{"action":"search","query":"first clue"}'),
+                ModelResponse(content='{"action":"search","query":"final verification"}'),
+                ModelResponse(
+                    content=(
+                        '{"action":"final","explanation":"unsupported",'
+                        '"exact_answer":"Answer","confidence":90,'
+                        '"citations":["https://example.test"]}'
+                    )
+                ),
+            ]
+        )
+
+    async def chat(self, messages, **kwargs):
+        del messages, kwargs
+        return next(self.responses)
+
+    async def close(self):
+        return None
+
+
 class ForcedFinalIgnoringModel:
     def __init__(self):
         self.responses = iter(
@@ -2298,6 +2322,53 @@ async def test_hard_budget_uses_one_external_finalization_rescue(tmp_path: Path)
     assert outcome.exact_answer == "Answer"
     assert outcome.confidence == 90
     assert outcome.external_model_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_external_finalization_rescue_cannot_bypass_opened_citation_gate(
+    tmp_path: Path,
+) -> None:
+    events: list[dict] = []
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=3,
+            max_search_calls=1,
+            automatic_finalization_rescue_after_rejections=1,
+            require_opened_citation_support=True,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=BudgetRescueThenUnsupportedFinalModel(),
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=4,
+        ),
+        external_model_broker=RescueExternalModelBroker(),
+        event_sink=events.append,
+    )
+
+    outcome = await runner.run(
+        "What is the name of the scientist?",
+        request_namespace="run:item:rescue-evidence-gate",
+    )
+
+    assert outcome.status == "no_final"
+    assert outcome.exact_answer is None
+    rejected = [
+        event for event in events if event["event"] == "automatic_finalization_rescue_rejected"
+    ]
+    assert len(rejected) == 1
+    assert any("evidence constraint" in violation for violation in rejected[0]["violations"])
 
 
 @pytest.mark.asyncio
