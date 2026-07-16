@@ -15,6 +15,15 @@ from .util import canonical_json
 
 _FINAL_ACTION_CONTRACT = re.compile(r'\{[^{}]*["\']action["\']\s*:\s*["\']final["\']', re.I)
 _REQUIRED_HELPER_MODEL = "frontierrl/star-2"
+_STRATEGY_SYSTEM_PROMPT = """
+You are a retrieval-strategy controller. The supplied task asks for a query plan, not a factual
+answer. Read the supplied question, evidence, and prior queries, then return exactly one native
+final tool call immediately. Put the requested JSON object verbatim in final.explanation, set
+final.exact_answer to "query strategy", confidence to a calibrated number, and citations to an
+empty list. Do not call search or other evidence tools unless the supplied context is genuinely
+insufficient to design distinct retrieval routes. Never search for benchmark dumps, canaries,
+leaked questions, or reference answers.
+""".strip()
 
 
 class AgentExternalModelBroker:
@@ -129,6 +138,19 @@ class AgentExternalModelBroker:
             }
         system = str(request.get("system") or "").strip()
         context = str(request.get("context") or "").strip()
+        task_mode = str(request.get("task_mode") or "research").strip().casefold()
+        strategy_mode = task_mode == "strategy"
+        helper_agent_config = self.agent_config
+        if strategy_mode:
+            helper_agent_config = self.agent_config.model_copy(
+                deep=True,
+                update={
+                    "max_steps": min(self.agent_config.max_steps, 4),
+                    "min_search_calls_before_final": 0,
+                    "require_citations": False,
+                    "require_opened_citation_support": False,
+                },
+            )
         question_parts = [
             "Act as an independent research helper for another agent.",
             "Use the supplied public-web tools whenever they can verify a material claim.",
@@ -159,15 +181,24 @@ class AgentExternalModelBroker:
                 "use geo_search, supply each stated distance as expected_distance_miles, and rank "
                 "shared candidates by routed distance error before selecting an answer."
             ),
-            (
+        ]
+        if strategy_mode:
+            question_parts.append(
+                "This request is for a retrieval strategy, not a factual benchmark answer. Use "
+                "the supplied evidence to produce the requested query-plan JSON immediately; "
+                "browse only if it materially improves the plan. Put the exact JSON object in "
+                "final.explanation with no surrounding markdown, set final.exact_answer to "
+                "'query strategy', and use an empty citations list."
+            )
+        else:
+            question_parts.append(
                 "Complete through the final tool. Put the full requested deliverable in final."
                 "explanation; if the request specifies JSON, place that exact JSON object in the "
                 "explanation with no surrounding markdown. Put only a concise recommendation in "
                 "final.exact_answer. When the task asks who someone is or asks for a name, the exact "
                 "answer must be a specific named entity. A category such as 'the actress,' a clue "
                 "restatement, or a phrase beginning 'the celebrity who' is not an answer."
-            ),
-        ]
+            )
         if system:
             question_parts.append(f"Request-specific instructions:\n{system}")
         question_parts.append(f"Task:\n{query}")
@@ -197,7 +228,7 @@ class AgentExternalModelBroker:
 
         runner = self.runner_factory(
             self.model_config,
-            self.agent_config,
+            helper_agent_config,
             self.browser_config,
             self.search,
             self.browser,
@@ -205,6 +236,7 @@ class AgentExternalModelBroker:
             external_model_config=self.disabled_external_config,
             external_model_broker=None,
             event_sink=event_sink,
+            system_prompt=_STRATEGY_SYSTEM_PROMPT if strategy_mode else None,
         )
         try:
             async with self._semaphore:
@@ -237,7 +269,13 @@ class AgentExternalModelBroker:
                         f"[bc250-helper] namespace={namespace} cleanup_error={type(exc).__name__}: {exc}",
                         flush=True,
                     )
-        return self._result_from_outcome(request, outcome, namespace=namespace, events=events)
+        return self._result_from_outcome(
+            request,
+            outcome,
+            namespace=namespace,
+            events=events,
+            require_citations=helper_agent_config.require_citations,
+        )
 
     def _partial_timeout_result(
         self,
@@ -308,6 +346,7 @@ class AgentExternalModelBroker:
         *,
         namespace: str,
         events: list[dict[str, Any]],
+        require_citations: bool,
     ) -> dict[str, Any]:
         contract = f"{request.get('system') or ''}\n{request.get('query') or ''}"
         if _FINAL_ACTION_CONTRACT.search(contract):
@@ -326,7 +365,7 @@ class AgentExternalModelBroker:
                 content += f"\n\nRecommended exact answer: {outcome.exact_answer}"
             if outcome.citations:
                 content += "\n\nSources:\n" + "\n".join(outcome.citations)
-        citations_satisfied = bool(outcome.citations) or not self.agent_config.require_citations
+        citations_satisfied = bool(outcome.citations) or not require_citations
         succeeded = outcome.status == "completed" and bool(content) and citations_satisfied
         result = {
             "ok": succeeded,

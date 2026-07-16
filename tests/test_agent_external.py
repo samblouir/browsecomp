@@ -204,6 +204,33 @@ async def test_agent_external_broker_rejects_uncited_helper_final() -> None:
     assert result[0]["error"] == "Star helper final answer omitted required citations"
 
 
+@pytest.mark.asyncio
+async def test_agent_external_strategy_skips_factual_answer_evidence_gates() -> None:
+    _NoCitationRunner.configurations = []
+    broker = AgentExternalModelBroker(
+        ExternalModelConfig(enabled=True, mode="agent", agent_api_key="real-key"),
+        AgentConfig(require_citations=True, require_opened_citation_support=True),
+        BrowserConfig(),
+        search_provider=object(),
+        page_fetcher=object(),
+        model_client=_FakeModelClient(),
+        runner_factory=_NoCitationRunner,
+    )
+
+    result = await broker.ask_many(
+        [{"task_mode": "strategy", "query": "Return a query-plan JSON object"}],
+        request_namespace="test:strategy",
+    )
+
+    assert result[0]["ok"] is True
+    config = _NoCitationRunner.configurations[-1]
+    assert config["agent"].require_citations is False
+    assert config["agent"].require_opened_citation_support is False
+    assert config["agent"].min_search_calls_before_final == 0
+    assert config["agent"].max_steps == 4
+    assert "retrieval-strategy controller" in config["kwargs"]["system_prompt"]
+
+
 def test_agent_external_broker_extracts_executed_search_queries() -> None:
     transcript = [
         {

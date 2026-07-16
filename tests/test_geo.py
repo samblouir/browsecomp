@@ -68,7 +68,7 @@ async def test_geo_research_ranks_shared_candidate_and_reuses_cache(tmp_path: Pa
     )
     anchors = [
         {"query": "Anchor A", "radius_m": 5000, "expected_distance_miles": 1.0},
-        {"query": "Anchor B", "radius_m": 5000, "expected_distance_miles": 2.0},
+        {"query": "Anchor B", "radius_m": 100, "expected_distance_miles": 2.0},
     ]
 
     first = await client.explore(anchors, category="restaurant")
@@ -76,6 +76,9 @@ async def test_geo_research_ranks_shared_candidate_and_reuses_cache(tmp_path: Pa
 
     assert first == second
     assert requests == {"/api/": 2, "/overpass": 2, "/matrix": 2}
+    assert first["anchors"][1]["radius_m"] == 3702
+    assert first["anchors"][1]["requested_radius_m"] == 100
+    assert first["anchors"][1]["radius_auto_expanded"] is True
     assert first["shared_entities"][0] == {
         "label": "Shared Cafe",
         "anchor_count": 2,

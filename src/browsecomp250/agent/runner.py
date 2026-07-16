@@ -174,6 +174,7 @@ class AgentRunner:
         external_model_config: ExternalModelConfig | None = None,
         external_model_broker: ExternalModelBroker | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
+        system_prompt: str | None = None,
     ):
         self.model_config = model_config
         self.agent_config = agent_config
@@ -190,7 +191,9 @@ class AgentRunner:
         self.external_model = external_model_broker
         self.event_sink = event_sink
         self.system_prompt = AGENT_SYSTEM_PROMPT
-        if agent_config.system_prompt_path is not None:
+        if system_prompt is not None:
+            self.system_prompt = system_prompt.strip()
+        elif agent_config.system_prompt_path is not None:
             self.system_prompt = agent_config.system_prompt_path.read_text(encoding="utf-8").strip()
 
     async def close(self) -> None:
@@ -1912,6 +1915,7 @@ class AgentRunner:
         )
         requests = [
             {
+                "task_mode": "strategy",
                 "system": (
                     "You are a query-strategy controller for an audited public-web research task. "
                     "Do not search for benchmark dumps, canaries, leaked questions, or reference "
@@ -2981,39 +2985,77 @@ class AgentRunner:
                 "the question contains multiple distance or proximity constraints, but no "
                 "successful deterministic geo_search was performed"
             ]
-        required_expected = min(len(distance_clues), 2)
-        evidence_with_expected = [
-            item
-            for item in valid_evidence
-            if sum(
-                anchor.get("expected_distance_miles") is not None
-                for anchor in item["anchors"]
-                if isinstance(anchor, dict) and anchor.get("ok")
-            )
-            >= required_expected
-        ]
-        if not evidence_with_expected:
-            return [
-                "geo_search did not encode at least two stated distances as "
-                "expected_distance_miles, so it cannot rank candidates against the clues"
-            ]
-        if not _GEO_ENTITY_QUESTION.search(question):
-            return []
+        required_expected = min(len(distance_clues), 4)
+        expected_anchors: set[str] = set()
+        matching_anchors: set[str] = set()
         normalized_answer = AgentRunner._normalize_consensus_answer(answer)
-        for evidence in evidence_with_expected:
+        for evidence_index, evidence in enumerate(valid_evidence):
+            for anchor_index, anchor in enumerate(evidence["anchors"]):
+                if not isinstance(anchor, dict) or not anchor.get("ok"):
+                    continue
+                expected = anchor.get("expected_distance_miles")
+                if expected is None:
+                    continue
+                anchor_key = (
+                    AgentRunner._normalize_consensus_answer(str(anchor.get("query") or ""))
+                    or f"{evidence_index}:{anchor_index}"
+                )
+                expected_anchors.add(anchor_key)
+                if not _GEO_ENTITY_QUESTION.search(question):
+                    continue
+                for place in anchor.get("places") or []:
+                    if not isinstance(place, dict):
+                        continue
+                    labels = {
+                        AgentRunner._normalize_consensus_answer(str(place.get("name") or "")),
+                        AgentRunner._normalize_consensus_answer(str(place.get("brand") or "")),
+                    } - {""}
+                    if any(
+                        label in normalized_answer or normalized_answer in label for label in labels
+                    ):
+                        matching_anchors.add(anchor_key)
+                        break
             for entity in evidence.get("shared_entities") or []:
+                if not isinstance(entity, dict):
+                    continue
                 normalized_label = AgentRunner._normalize_consensus_answer(
                     str(entity.get("label") or "")
                 )
-                if not normalized_label:
-                    continue
-                if (
+                if not normalized_label or not (
                     normalized_label in normalized_answer or normalized_answer in normalized_label
-                ) and int(entity.get("expected_distance_anchor_count") or 0) >= required_expected:
-                    return []
+                ):
+                    continue
+                for match in entity.get("matches") or []:
+                    if not isinstance(match, dict):
+                        continue
+                    anchor_index = match.get("anchor_index")
+                    if not isinstance(anchor_index, int) or not 0 <= anchor_index < len(
+                        evidence["anchors"]
+                    ):
+                        continue
+                    anchor = evidence["anchors"][anchor_index]
+                    if (
+                        not isinstance(anchor, dict)
+                        or anchor.get("expected_distance_miles") is None
+                    ):
+                        continue
+                    anchor_key = (
+                        AgentRunner._normalize_consensus_answer(str(anchor.get("query") or ""))
+                        or f"{evidence_index}:{anchor_index}"
+                    )
+                    matching_anchors.add(anchor_key)
+        if len(expected_anchors) < required_expected:
+            return [
+                f"geo_search encoded routed evidence for only {len(expected_anchors)} distinct "
+                f"stated-distance anchors; at least {required_expected} are required"
+            ]
+        if not _GEO_ENTITY_QUESTION.search(question):
+            return []
+        if len(matching_anchors) >= required_expected:
+            return []
         return [
-            "the proposed place or business is not a shared geo_search candidate with routed "
-            "distance evidence for at least two stated anchors"
+            f"the proposed place or business fits only {len(matching_anchors)} of "
+            f"{required_expected} distinct routed-distance anchor candidate pools"
         ]
 
     @staticmethod

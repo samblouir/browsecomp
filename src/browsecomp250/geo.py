@@ -122,7 +122,7 @@ class GeoResearchClient:
 
         entity_occurrences: dict[str, dict[str, Any]] = {}
         for anchor_index, row in enumerate(rows):
-            for place in row.get("places") or []:
+            for place in row.get("_candidate_pool") or row.get("places") or []:
                 labels = {
                     str(place.get("name") or "").strip(),
                     str(place.get("brand") or "").strip(),
@@ -179,6 +179,8 @@ class GeoResearchClient:
                 item["label"].casefold(),
             )
         )
+        for row in rows:
+            row.pop("_candidate_pool", None)
         return {
             "ok": any(row.get("ok") for row in rows),
             "category": category,
@@ -211,12 +213,18 @@ class GeoResearchClient:
         query = " ".join(str(anchor.get("query") or "").split()).strip()
         if not query:
             raise GeoResearchError("Every geo anchor requires a non-empty query")
-        radius_m = max(100, min(int(anchor.get("radius_m") or 5_000), 25_000))
+        requested_radius_m = max(100, min(int(anchor.get("radius_m") or 5_000), 25_000))
         expected_distance_miles = anchor.get("expected_distance_miles")
         if expected_distance_miles is not None:
             expected_distance_miles = float(expected_distance_miles)
             if expected_distance_miles < 0:
                 raise GeoResearchError("expected_distance_miles must be non-negative")
+        minimum_route_radius_m = (
+            min(25_000, math.ceil(expected_distance_miles * 1_609.344 * 1.15))
+            if expected_distance_miles is not None
+            else 0
+        )
+        radius_m = max(requested_radius_m, minimum_route_radius_m)
         point = await self._geocode(query)
         places = await self._nearby_places(
             point["lat"],
@@ -269,14 +277,17 @@ class GeoResearchClient:
                         item["straight_line_miles"],
                     )
                 )
-                places = places[:max_results]
+        candidate_pool = places
         return {
             "ok": True,
             "query": query,
             "radius_m": radius_m,
+            "requested_radius_m": requested_radius_m,
+            "radius_auto_expanded": radius_m > requested_radius_m,
             "expected_distance_miles": expected_distance_miles,
             "location": point,
-            "places": places,
+            "places": places[:max_results],
+            "_candidate_pool": candidate_pool,
         }
 
     async def _geocode(self, query: str) -> dict[str, Any]:

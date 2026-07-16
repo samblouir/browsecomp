@@ -884,12 +884,12 @@ async def test_agent_keeps_tool_schema_stable_when_page_inspection_is_due(tmp_pa
         "search",
         "search_many",
         "open",
-            "open_many",
-            "find",
-            "geo_search",
-            "note",
-            "final",
-        }
+        "open_many",
+        "find",
+        "geo_search",
+        "note",
+        "final",
+    }
 
 
 def test_result_has_urls_detects_batched_search_candidates() -> None:
@@ -1536,8 +1536,28 @@ def test_distance_constrained_place_requires_ranked_cross_anchor_geo_evidence() 
         {
             "ok": True,
             "anchors": [
-                {"ok": True, "expected_distance_miles": 1.2},
-                {"ok": True, "expected_distance_miles": 2.4},
+                {
+                    "ok": True,
+                    "query": "Alpha Mall",
+                    "expected_distance_miles": 1.2,
+                    "places": [
+                        {
+                            "name": "Correct Restaurant",
+                            "distance_error_miles": 0.2,
+                        }
+                    ],
+                },
+                {
+                    "ok": True,
+                    "query": "Beta Stadium",
+                    "expected_distance_miles": 2.4,
+                    "places": [
+                        {
+                            "brand": "Correct Restaurant",
+                            "distance_error_miles": 0.4,
+                        }
+                    ],
+                },
             ],
             "shared_entities": [
                 {
