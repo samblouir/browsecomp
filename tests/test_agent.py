@@ -2171,7 +2171,7 @@ def test_final_evidence_preserves_literal_hashtag_relation() -> None:
     )
 
 
-def test_long_multihop_final_accepts_answer_source_plus_identity_chain_source() -> None:
+def test_long_multihop_final_accepts_one_direct_answer_source() -> None:
     question = (
         "A 2018 database paper cataloged experimentally validated transcription factors. "
         "One author later joined an international research group in 2021. "
@@ -2198,19 +2198,96 @@ def test_long_multihop_final_accepts_answer_source_plus_identity_chain_source() 
         status_code=200,
     )
 
-    one_source_errors = AgentRunner._final_evidence_constraint_errors(
+    assert not AgentRunner._final_evidence_constraint_errors(
         question,
         "Ada Example",
         [first.final_url],
         {first.final_url: first, second.final_url: second},
     )
-    assert one_source_errors and "only 1 relevant source(s)" in one_source_errors[0]
     assert not AgentRunner._final_evidence_constraint_errors(
         question,
         "Ada Example",
         [first.final_url, second.final_url],
         {first.final_url: first, second.final_url: second},
     )
+
+
+def test_long_multihop_final_requires_chain_for_scattered_answer_mention() -> None:
+    question = (
+        "A 2018 database paper cataloged experimentally validated transcription factors. "
+        "One author later joined an international research group in 2021. "
+        "Which scientist also collaborated on the group's earlier genomics project? "
+        "Give the scientist's full name based on the publication and group records."
+    )
+    weak = PageDocument(
+        requested_url="https://directory.test/ada",
+        final_url="https://directory.test/ada",
+        title="Researcher directory",
+        text=(
+            "Ada Example appears in this general directory. "
+            + "Background information. " * 60
+            + "A 2018 transcription factor database paper and a 2021 international genomics "
+            "research group are discussed elsewhere on this page."
+        ),
+        content_type="text/plain",
+        status_code=200,
+    )
+    chain = PageDocument(
+        requested_url="https://group.test/project",
+        final_url="https://group.test/project",
+        title="International genomics research group project",
+        text=(
+            "The group formed in 2021 after completing its earlier genomics collaboration "
+            "project with contributors to the transcription factor database paper."
+        ),
+        content_type="text/plain",
+        status_code=200,
+    )
+
+    errors = AgentRunner._final_evidence_constraint_errors(
+        question,
+        "Ada Example",
+        [weak.final_url],
+        {weak.final_url: weak},
+    )
+    assert errors and "no single cited page directly states" in errors[0]
+    assert not AgentRunner._final_evidence_constraint_errors(
+        question,
+        "Ada Example",
+        [weak.final_url, chain.final_url],
+        {weak.final_url: weak, chain.final_url: chain},
+    )
+
+
+def test_final_evidence_blocks_explicit_answer_contradiction() -> None:
+    question = "Who wrote the analytical engine notes?"
+    supporting = PageDocument(
+        requested_url="https://archive.test/notes",
+        final_url="https://archive.test/notes",
+        title="Analytical engine notes",
+        text="Ada Lovelace wrote the analytical engine notes.",
+        content_type="text/plain",
+        status_code=200,
+    )
+    contradiction = PageDocument(
+        requested_url="https://archive.test/correction",
+        final_url="https://archive.test/correction",
+        title="Correction about the analytical engine notes",
+        text="Ada Lovelace did not write the analytical engine notes, according to this correction.",
+        content_type="text/plain",
+        status_code=200,
+    )
+
+    errors = AgentRunner._final_evidence_constraint_errors(
+        question,
+        "Ada Lovelace",
+        [supporting.final_url, contradiction.final_url],
+        {
+            supporting.final_url: supporting,
+            contradiction.final_url: contradiction,
+        },
+    )
+    assert errors and "explicitly contradicts" in errors[0]
 
 
 def test_distance_constrained_place_requires_ranked_cross_anchor_geo_evidence() -> None:

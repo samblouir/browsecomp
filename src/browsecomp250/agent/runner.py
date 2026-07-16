@@ -109,6 +109,28 @@ _EVIDENCE_SIGNAL_TERMS = frozenset(
         "wrote",
     }
 )
+_DIRECT_EVIDENCE_STOPWORDS = _LINK_STOPWORDS | frozenset(
+    {
+        "answer",
+        "identify",
+        "name",
+        "named",
+        "question",
+        "tell",
+        "what",
+        "when",
+        "where",
+        "which",
+        "who",
+        "whose",
+    }
+)
+_EXPLICIT_EVIDENCE_CONTRADICTION = re.compile(
+    r"\b(?:did|does|do|is|are|was|were|has|have|had|can|could|would)\s+not\s+(?!only\b)|"
+    r"\bnever\b|\b(?:incorrectly|falsely)\s+(?:attributed|credited|identified|reported)\b|"
+    r"\b(?:misattributed|disputed)\b",
+    flags=re.I,
+)
 _ABSTENTION_ANSWER = re.compile(
     r"^(?:"
     r"unknown|none|n/?a|inconclusive|undetermined|"
@@ -3707,6 +3729,71 @@ class AgentRunner:
         return len(question_terms & page_terms) >= required_overlap
 
     @staticmethod
+    def _answer_evidence_windows(answer: str, document: PageDocument) -> list[str]:
+        """Return compact text windows around each normalized answer occurrence."""
+
+        evidence = f"{document.title}\n{document.text}"
+        answer_tokens = [match.group(0).casefold() for match in _CONSENSUS_WORD.finditer(answer)]
+        evidence_tokens = list(_CONSENSUS_WORD.finditer(evidence))
+        if not answer_tokens or len(evidence_tokens) < len(answer_tokens):
+            return []
+
+        normalized_tokens = [match.group(0).casefold() for match in evidence_tokens]
+        windows: list[str] = []
+        width = len(answer_tokens)
+        for index in range(len(normalized_tokens) - width + 1):
+            if normalized_tokens[index : index + width] != answer_tokens:
+                continue
+            first = max(0, index - 24)
+            last = min(len(evidence_tokens), index + width + 24)
+            windows.append(evidence[evidence_tokens[first].start() : evidence_tokens[last - 1].end()])
+        return windows
+
+    @classmethod
+    def _document_explicitly_contradicts_answer(
+        cls,
+        question: str,
+        answer: str,
+        document: PageDocument,
+    ) -> bool:
+        relation_terms = (
+            cls._search_query_terms(question)
+            - _DIRECT_EVIDENCE_STOPWORDS
+            - cls._search_query_terms(answer)
+        )
+        for window in cls._answer_evidence_windows(answer, document):
+            if not _EXPLICIT_EVIDENCE_CONTRADICTION.search(window):
+                continue
+            window_terms = cls._search_query_terms(window) - _DIRECT_EVIDENCE_STOPWORDS
+            if not relation_terms or relation_terms & window_terms:
+                return True
+        return False
+
+    @classmethod
+    def _document_directly_supports_answer(
+        cls,
+        question: str,
+        answer: str,
+        document: PageDocument,
+    ) -> bool:
+        """Detect a local answer-and-relation statement, not just terms scattered over a page."""
+
+        answer_terms = cls._search_query_terms(answer)
+        relation_terms = (
+            cls._search_query_terms(question) - _DIRECT_EVIDENCE_STOPWORDS - answer_terms
+        )
+        if not relation_terms:
+            return False
+        required_overlap = 1 if len(relation_terms) == 1 else 2
+        for window in cls._answer_evidence_windows(answer, document):
+            if _EXPLICIT_EVIDENCE_CONTRADICTION.search(window):
+                continue
+            window_terms = cls._search_query_terms(window) - _DIRECT_EVIDENCE_STOPWORDS
+            if len(relation_terms & window_terms) >= required_overlap:
+                return True
+        return False
+
+    @staticmethod
     def _evidence_url_key(url: str) -> str:
         parsed = urlsplit(url.strip())
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -4235,6 +4322,7 @@ class AgentRunner:
             return ["the proposed exact answer has no searchable content"]
         require_literal_hashtag = answer.strip().startswith("#")
         supporting_documents: list[PageDocument] = []
+        contradicting_documents: list[PageDocument] = []
         for document in cited_documents:
             page = {
                 "title": document.title,
@@ -4250,7 +4338,15 @@ class AgentRunner:
                 else normalized_answer in normalized_evidence
             )
             if answer_present and cls._page_matches_question(question, page):
-                supporting_documents.append(document)
+                if cls._document_explicitly_contradicts_answer(question, answer, document):
+                    contradicting_documents.append(document)
+                else:
+                    supporting_documents.append(document)
+        if contradicting_documents:
+            return [
+                "a cited, inspected, question-relevant page explicitly contradicts the proposed "
+                "answer; resolve the source conflict before finalizing"
+            ]
         if not supporting_documents:
             return [
                 "no cited, inspected page both names the proposed exact answer and materially "
@@ -4263,6 +4359,11 @@ class AgentRunner:
         # strongest evidence shape. Require one answer-naming page, then count other cited,
         # inspected, question-relevant pages toward the multi-hop corroboration requirement.
         minimum_support = cls._minimum_answer_supporting_documents(question)
+        if minimum_support == 1 or any(
+            cls._document_directly_supports_answer(question, answer, document)
+            for document in supporting_documents
+        ):
+            return []
         relevant_documents = [
             document
             for document in cited_documents
@@ -4279,7 +4380,8 @@ class AgentRunner:
         if len(relevant_documents) >= minimum_support:
             return []
         return [
-            "a multi-hop question requires at least "
+            "no single cited page directly states the answer relation, so this multi-hop question "
+            "requires at least "
             f"{minimum_support} cited, inspected, question-relevant sources, including one that "
             f"names the exact answer; only {len(relevant_documents)} relevant source(s) were supplied"
         ]
