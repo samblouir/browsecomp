@@ -424,6 +424,36 @@ class DescriptorThenNamedEntityModel:
         return None
 
 
+class UnsupportedFinalModel:
+    def __init__(self):
+        self.calls = []
+        self.responses = iter(
+            [
+                ModelResponse(
+                    content=(
+                        '{"action":"final","explanation":"best unresolved candidate",'
+                        '"exact_answer":"Ada Lovelace","confidence":55,'
+                        '"citations":["https://example.test/unopened"]}'
+                    )
+                ),
+                ModelResponse(
+                    content=(
+                        '{"action":"final","explanation":"best unresolved candidate",'
+                        '"exact_answer":"Ada Lovelace","confidence":45,'
+                        '"citations":["https://example.test/unopened"]}'
+                    )
+                ),
+            ]
+        )
+
+    async def chat(self, messages, **kwargs):
+        self.calls.append((deepcopy(messages), deepcopy(kwargs)))
+        return next(self.responses)
+
+    async def close(self):
+        return None
+
+
 class FakeSearch:
     def __init__(self, tmp_path: Path):
         self.config = SearchConfig(provider="searxng", cache_path=tmp_path / "s.sqlite3")
@@ -1374,6 +1404,79 @@ def test_final_evidence_preserves_literal_hashtag_relation() -> None:
         [page.final_url],
         opened,
     )
+
+
+@pytest.mark.asyncio
+async def test_unsupported_final_remains_rejected_without_hard_budget_override(
+    tmp_path: Path,
+) -> None:
+    events: list[dict] = []
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+        ),
+        AgentConfig(
+            max_steps=2,
+            require_opened_citation_support=True,
+            allow_unsupported_final_at_hard_budget=False,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=UnsupportedFinalModel(),
+        event_sink=events.append,
+    )
+
+    outcome = await runner.run(
+        "What is the name of the scientist who wrote the analytical engine notes?"
+    )
+
+    assert outcome.status == "no_final"
+    assert outcome.exact_answer is None
+    assert sum(event["event"] == "citation_support_final_rejected" for event in events) == 2
+
+
+@pytest.mark.asyncio
+async def test_hard_budget_can_return_concrete_best_effort_after_strict_rejection(
+    tmp_path: Path,
+) -> None:
+    events: list[dict] = []
+    model = UnsupportedFinalModel()
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+        ),
+        AgentConfig(
+            max_steps=2,
+            require_opened_citation_support=True,
+            allow_unsupported_final_at_hard_budget=True,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=model,
+        event_sink=events.append,
+    )
+
+    outcome = await runner.run(
+        "What is the name of the scientist who wrote the analytical engine notes?"
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Ada Lovelace"
+    assert outcome.confidence == 45
+    assert sum(event["event"] == "citation_support_final_rejected" for event in events) == 1
+    assert any(
+        event["event"] == "citation_support_final_overridden_at_hard_budget"
+        for event in events
+    )
+    assert len(model.calls) == 2
 
 
 @pytest.mark.asyncio

@@ -677,42 +677,58 @@ class AgentRunner:
                         opened,
                     )
                     if evidence_errors:
-                        correction = (
-                            "Final answer is not grounded in an inspected citation: "
-                            + "; ".join(evidence_errors)
-                            + ". Open the strongest cited source or search a different route, then "
-                            "return an exact answer that the inspected evidence actually names."
-                        )
-                        errors.append(correction)
-                        raw_tool_calls = assistant_message.get("tool_calls")
                         if (
-                            protocol in {"tools", "auto"}
-                            and isinstance(raw_tool_calls, list)
-                            and raw_tool_calls
+                            self.agent_config.allow_unsupported_final_at_hard_budget
+                            and step == self.agent_config.max_steps
                         ):
-                            messages.append(assistant_message)
-                            rejected_tool_call = raw_tool_calls[0]
-                            correction_message = {
-                                "role": "tool",
-                                "tool_call_id": rejected_tool_call.get("id", f"call-{step}"),
-                                "name": str(
-                                    (rejected_tool_call.get("function") or {}).get("name")
-                                    or "final"
-                                ),
-                                "content": canonical_json({"ok": False, "error": correction}),
-                            }
+                            warning = (
+                                "Hard-budget best-effort final lacked fully inspected source "
+                                "support: "
+                                + "; ".join(evidence_errors)
+                            )
+                            errors.append(warning)
+                            self._emit(
+                                "citation_support_final_overridden_at_hard_budget",
+                                step=step,
+                                violations=evidence_errors,
+                            )
                         else:
-                            messages.append({"role": "assistant", "content": response.content})
-                            correction_message = {"role": "user", "content": correction}
-                        messages.append(correction_message)
-                        transcript.append(correction_message)
-                        chain_delta_messages = [correction_message]
-                        self._emit(
-                            "citation_support_final_rejected",
-                            step=step,
-                            violations=evidence_errors,
-                        )
-                        continue
+                            correction = (
+                                "Final answer is not grounded in an inspected citation: "
+                                + "; ".join(evidence_errors)
+                                + ". Open the strongest cited source or search a different route, then "
+                                "return an exact answer that the inspected evidence actually names."
+                            )
+                            errors.append(correction)
+                            raw_tool_calls = assistant_message.get("tool_calls")
+                            if (
+                                protocol in {"tools", "auto"}
+                                and isinstance(raw_tool_calls, list)
+                                and raw_tool_calls
+                            ):
+                                messages.append(assistant_message)
+                                rejected_tool_call = raw_tool_calls[0]
+                                correction_message = {
+                                    "role": "tool",
+                                    "tool_call_id": rejected_tool_call.get("id", f"call-{step}"),
+                                    "name": str(
+                                        (rejected_tool_call.get("function") or {}).get("name")
+                                        or "final"
+                                    ),
+                                    "content": canonical_json({"ok": False, "error": correction}),
+                                }
+                            else:
+                                messages.append({"role": "assistant", "content": response.content})
+                                correction_message = {"role": "user", "content": correction}
+                            messages.append(correction_message)
+                            transcript.append(correction_message)
+                            chain_delta_messages = [correction_message]
+                            self._emit(
+                                "citation_support_final_rejected",
+                                step=step,
+                                violations=evidence_errors,
+                            )
+                            continue
                 outcome = self._final_outcome(
                     action,
                     started=started,

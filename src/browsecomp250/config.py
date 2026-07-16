@@ -312,6 +312,7 @@ class AgentConfig(StrictConfigModel):
     parse_retries: int = Field(default=2, ge=0, le=10)
     require_citations: bool = True
     require_opened_citation_support: bool = False
+    allow_unsupported_final_at_hard_budget: bool = False
     enable_search_many: bool = True
     enable_open_many: bool = True
     max_batch_size: int = Field(default=5, ge=1, le=20)

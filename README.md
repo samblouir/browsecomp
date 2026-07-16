@@ -164,7 +164,10 @@ same search, page-open, and find tools. Hard items receive one strategy-first
 helper after eight searches; further review is evidence-triggered rather than a
 mandatory full council. A helper must perform an independent falsification
 search before finalizing, and its reviews must preserve clue relation types and
-provide their own citations. The generic production-broker adapter remains
+provide their own citations. Source support remains a hard gate on normal turns;
+the configured final hard-budget turn may return one concrete, answer-type-valid
+best effort instead of an empty answer, with the support failure retained in the
+private audit trail. The generic production-broker adapter remains
 available for comparison configs. See
 [`STAR_IMPLEMENTATION.md`](STAR_IMPLEMENTATION.md) for search isolation,
 external-call budgets, and live verification details.

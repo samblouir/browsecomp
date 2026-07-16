@@ -69,6 +69,11 @@
           "title": "Require Opened Citation Support",
           "type": "boolean"
         },
+        "allow_unsupported_final_at_hard_budget": {
+          "default": false,
+          "title": "Allow Unsupported Final At Hard Budget",
+          "type": "boolean"
+        },
         "enable_search_many": {
           "default": true,
           "title": "Enable Search Many",

@@ -124,6 +124,7 @@ agent:
   parse_retries: 3
   require_citations: true
   require_opened_citation_support: true
+  allow_unsupported_final_at_hard_budget: true
   enable_search_many: true
   enable_open_many: true
   max_batch_size: 7
