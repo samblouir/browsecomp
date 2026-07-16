@@ -803,6 +803,11 @@ class AgentRunner:
             action, redundant_search_queries = self._filter_redundant_search_action(
                 action,
                 search_query_history,
+                preserve_queries=bool(
+                    current_scripted_step
+                    and isinstance(current_scripted_step.get("required_queries"), list)
+                    and current_scripted_step.get("required_queries")
+                ),
             )
             semantic_duplicate_action = action is None
             strategy_recovery: dict[str, Any] | None = None
@@ -2641,7 +2646,11 @@ class AgentRunner:
         cls,
         action: AgentAction,
         prior_queries: list[str],
+        *,
+        preserve_queries: bool = False,
     ) -> tuple[AgentAction | None, list[str]]:
+        if preserve_queries:
+            return action, []
         queries = cls._search_queries(action)
         if not queries:
             return action, []

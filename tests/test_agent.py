@@ -2064,6 +2064,22 @@ def test_search_novelty_suppresses_date_range_and_near_duplicate_variants() -> N
     assert suppressed == ['"first person to document entity use" 2012-2023']
 
 
+def test_scripted_required_search_queries_bypass_novelty_filter() -> None:
+    action = AgentAction(
+        action="search_many",
+        payload={"queries": ["same clue 2012-2023", "different relation"]},
+    )
+
+    preserved, suppressed = AgentRunner._filter_redundant_search_action(
+        action,
+        ["same clue 2012..2023"],
+        preserve_queries=True,
+    )
+
+    assert preserved == action
+    assert suppressed == []
+
+
 def test_search_strategy_parser_returns_only_novel_queries() -> None:
     result = {
         "ok": True,
