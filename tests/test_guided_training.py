@@ -113,6 +113,9 @@ def test_compiler_redacts_private_label_but_keeps_public_source_url() -> None:
     open_step = next(step for step in steps if step["id"] == "open_mapped_source_01")
     assert "Secret Person" not in open_step["instruction"]
     assert "${candidate}" not in open_step["instruction"]
+    assert "open with exactly this URL: https://example.test/secret-person" in open_step[
+        "instruction"
+    ]
     assert any(step["id"] == "mapped_evidence_ledger" for step in steps)
     recovery = next(step for step in steps if step["id"] == "answer_redacted_passage_recovery")
     assert "Secret Person" not in recovery["instruction"]

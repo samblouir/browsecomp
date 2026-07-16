@@ -202,6 +202,7 @@ def compile_guided_steps(
     ][:7]
     for index, source in enumerate(sources, start=1):
         source_id = str(source.get("source_id") or f"source-{index}")
+        source_url = str(source["url"])
         title = redact_oracle_text(str(source.get("title") or "mapped source"), oracle_record)
         if _CANDIDATE_PLACEHOLDER in title:
             title = "answer-redacted mapped source title"
@@ -211,9 +212,13 @@ def compile_guided_steps(
                 "id": f"open_mapped_source_{index:02d}",
                 "plan_step_ids": ["S004", "S005", "S006", "S011"],
                 "instruction": (
-                    f"Open mapped source {index}/{len(sources)} now. Inspect the actual page for "
-                    "direct evidence and identity facts; snippets are leads only. Record useful "
-                    "facts in reasoning, but do not finalize. "
+                    f"Open mapped source {index}/{len(sources)} now by calling open with exactly "
+                    f"this URL: {source_url}. Do not search for it, substitute another page, or "
+                    "skip it even if it seems redundant or inaccessible. This is a transport-only "
+                    "turn: call open immediately and defer synthesis, candidate comparison, and "
+                    "constraint reassessment to the later ledger turns. Inspect the actual page "
+                    "for direct evidence and identity facts; snippets are leads only. Do not "
+                    "finalize. "
                     + canonical_json(
                         {
                             "source_role": source.get("role"),
@@ -223,7 +228,7 @@ def compile_guided_steps(
                     )
                 ),
                 "allowed_actions": ["open"],
-                "required_urls": [str(source["url"])],
+                "required_urls": [source_url],
                 "advance_on_attempt": True,
             }
         )
