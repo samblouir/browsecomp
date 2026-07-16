@@ -1258,8 +1258,13 @@ def test_external_consultation_urls_reject_query_mirror_paths_without_domain_rul
         "would-never-go-commercial-do-not-feel-threatened/"
     )
     legitimate = "https://news.example/interviews/artist-profile-and-new-album"
+    partial_mirror = (
+        "https://answers.example/crossword-solver/artist-album-for-fun-debut-album-"
+        "2001-2005-roman-numerals-never-commercial"
+    )
 
     assert AgentRunner._looks_like_query_mirror_url(question, mirror)
+    assert AgentRunner._looks_like_query_mirror_url(question, partial_mirror)
     assert not AgentRunner._looks_like_query_mirror_url(question, legitimate)
     assert AgentRunner._external_consultation_urls(
         [{"content": f"Possible sources: {mirror} and {legitimate}"}],
@@ -1267,6 +1272,63 @@ def test_external_consultation_urls_reject_query_mirror_paths_without_domain_rul
         opened={},
         limit=3,
     ) == [legitimate]
+
+
+def test_search_results_remove_query_mirrors_before_model_context() -> None:
+    question = (
+        "Which artist born in England made an album for fun, had a debut album between "
+        "2001 and 2005, released albums with Roman numerals, and said they would never go "
+        "commercial or feel threatened?"
+    )
+    mirror = (
+        "https://answers.example/crossword-solver/artist-album-for-fun-debut-album-"
+        "2001-2005-roman-numerals-never-commercial"
+    )
+    legitimate = "https://news.example/interviews/artist-profile-and-new-album"
+    result = {
+        "ok": True,
+        "succeeded": 1,
+        "failed": 0,
+        "searches": [
+            {
+                "query": "artist album interview",
+                "results": [
+                    {"url": mirror, "title": "Mirrored clue"},
+                    {"url": legitimate, "title": "Interview"},
+                ],
+            }
+        ],
+    }
+
+    filtered = AgentRunner._filter_query_mirror_search_results(question, result)
+
+    assert filtered["ok"] is True
+    assert filtered["filtered_query_mirror_results"] == 1
+    assert filtered["searches"][0]["results"] == [{"url": legitimate, "title": "Interview"}]
+
+
+def test_external_final_review_rejects_query_mirror_citation() -> None:
+    question = (
+        "Which artist born in England made an album for fun, had a debut album between "
+        "2001 and 2005, released albums with Roman numerals, and said they would never go "
+        "commercial or feel threatened?"
+    )
+    mirror = (
+        "https://answers.example/crossword-solver/artist-album-for-fun-debut-album-"
+        "2001-2005-roman-numerals-never-commercial"
+    )
+    reviews = [
+        {
+            "ok": True,
+            "content": (
+                '{"action":"final","explanation":"clue page",'
+                '"exact_answer":"Candidate","confidence":99,'
+                f'"citations":["{mirror}"]}}'
+            ),
+        }
+    ]
+
+    assert AgentRunner._concrete_review_actions(reviews, question=question) == []
 
 
 def test_forced_final_recovers_agent_backend_plain_content() -> None:

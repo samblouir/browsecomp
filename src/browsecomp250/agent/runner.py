@@ -1004,6 +1004,7 @@ class AgentRunner:
                         request_namespace=external_namespace,
                     )
                     if action.action in {"search", "search_many"}:
+                        result = self._filter_query_mirror_search_results(question, result)
                         search_query_history.extend(self._search_queries(action))
                     if action.action in {"search", "search_many"} and result.get("ok"):
                         last_successful_search_result = result
@@ -2239,6 +2240,13 @@ class AgentRunner:
                 continue
             seen_request_ids.add(request_id)
             exact_answer = str(consultation.get("exact_answer") or "").strip()
+            citations = [
+                str(citation).strip()
+                for citation in consultation.get("citations") or []
+                if isinstance(citation, str)
+            ]
+            if any(cls._looks_like_query_mirror_url(question, url) for url in citations):
+                continue
             normalized_answer = cls._normalize_consensus_answer(exact_answer)
             if not normalized_answer or _ABSTENTION_ANSWER.match(exact_answer):
                 continue
@@ -2336,10 +2344,73 @@ class AgentRunner:
             return False
         path = unquote(urlsplit(url).path).replace("-", " ")
         path_terms = cls._search_query_terms(path) - _LINK_STOPWORDS
-        if len(path) < 120 or len(path_terms) < 14:
+        if len(path) < 80 or len(path_terms) < 8:
             return False
         overlap = len(question_terms & path_terms)
-        return overlap >= 8 and overlap / len(question_terms) >= 0.5
+        question_coverage = overlap / len(question_terms)
+        path_coverage = overlap / len(path_terms)
+        solver_path = any(
+            marker in path.casefold()
+            for marker in ("crossword solver", "crossword clue", "question answer")
+        )
+        return bool(
+            overlap >= 8
+            and (
+                question_coverage >= 0.5
+                or path_coverage >= 0.65
+                or (solver_path and path_coverage >= 0.5)
+            )
+        )
+
+    @classmethod
+    def _filter_query_mirror_search_results(
+        cls,
+        question: str,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Remove clue-restating SEO pages before either Star model can use them."""
+
+        filtered = 0
+
+        def safe_results(rows: Any) -> list[dict[str, Any]]:
+            nonlocal filtered
+            if not isinstance(rows, list):
+                return []
+            safe: list[dict[str, Any]] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                url = str(row.get("url") or "")
+                if url and cls._looks_like_query_mirror_url(question, url):
+                    filtered += 1
+                    continue
+                safe.append(row)
+            return safe
+
+        if isinstance(result.get("results"), list):
+            result["results"] = safe_results(result["results"])
+            result["ok"] = bool(result["results"])
+        searches = result.get("searches")
+        if isinstance(searches, list):
+            succeeded = 0
+            for search in searches:
+                if not isinstance(search, dict) or not isinstance(search.get("results"), list):
+                    continue
+                search["results"] = safe_results(search["results"])
+                if search["results"]:
+                    succeeded += 1
+                elif "error" not in search:
+                    search["integrity_error"] = "all returned pages were query mirrors"
+            result["succeeded"] = succeeded
+            result["failed"] = len(searches) - succeeded
+            result["ok"] = succeeded > 0
+        if filtered:
+            result["filtered_query_mirror_results"] = filtered
+            result["search_integrity_guidance"] = (
+                "Clue-restating SEO pages were removed. Use independently authored sources; "
+                "never infer an answer from a URL slug that mirrors the question."
+            )
+        return result
 
     async def _automatic_external_finalization(
         self,
@@ -2699,6 +2770,14 @@ class AgentRunner:
     ) -> list[str]:
         """Require the proposed exact answer to occur in a cited, inspected relevant page."""
 
+        mirror_citations = [
+            str(citation)
+            for citation in citations
+            if isinstance(citation, str) and cls._looks_like_query_mirror_url(question, citation)
+        ]
+        if mirror_citations:
+            return ["a cited URL is a clue-restating query mirror rather than independent evidence"]
+
         citation_keys = {
             key
             for citation in citations
@@ -2785,6 +2864,13 @@ class AgentRunner:
                     continue
                 cls._require_valid_final_for_question(action, question)
             except ProtocolError:
+                continue
+            citations = [
+                str(citation).strip()
+                for citation in action.payload.get("citations") or []
+                if isinstance(citation, str)
+            ]
+            if any(cls._looks_like_query_mirror_url(question, url) for url in citations):
                 continue
             actions.append(action)
         return actions
