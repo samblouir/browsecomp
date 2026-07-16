@@ -273,12 +273,13 @@ def compile_guided_steps(
                     "id": f"guide_search_rung_{ordinal}",
                     "plan_step_ids": [step_id],
                     "instruction": (
-                        "Execute this exact guide-supplied discovery rung as one batched search. "
-                        "Do not replace it with a different query or finalize.\n"
+                        "Execute this guide-supplied discovery rung as one batched search. Use the "
+                        "queries as high-value seeds, preserving their rare anchors and relation "
+                        "direction, but omit redundant variants or make minimal search-engine "
+                        "syntax repairs when useful. Do not finalize.\n"
                         + canonical_json({"queries": queries})
                     ),
                     "allowed_actions": ["search_many"],
-                    "required_queries": queries,
                     "advance_on_attempt": True,
                 }
             )

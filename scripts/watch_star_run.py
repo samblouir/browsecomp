@@ -4,11 +4,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 TERMINAL_STATES = {"completed", "completed_with_errors"}
+NOTIFIER = Path.home() / ".codex/skills/smux-notifier/scripts/smux_notify.py"
 
 
 def parse_time(value: object) -> float:
@@ -39,6 +42,74 @@ def write_watcher_status(path: Path, payload: dict[str, object]) -> None:
     temporary.replace(path)
 
 
+def normalized_status(data: dict[str, object]) -> dict[str, object]:
+    """Normalize both benchmark-runner and private guided-training status schemas."""
+    if "target_total_questions" in data:
+        target = int(data.get("target_total_questions") or 0)
+        completed = int(data.get("current_records") or 0)
+        failed = int(data.get("failed") or 0)
+        finished = int(data.get("finished_items") or completed + failed)
+        done = bool(data.get("done"))
+        state = "completed_with_errors" if done and failed else "completed" if done else "running"
+        return {
+            "state": state,
+            "completed": completed,
+            "failed": failed,
+            "remaining": max(0, target - finished),
+            "active_trials": data.get("in_progress") or {},
+            "updated_at": data.get("updated_at"),
+            "target": target,
+        }
+    return {
+        "state": str(data.get("state") or "starting"),
+        "completed": int(data.get("completed") or 0),
+        "failed": int(data.get("failed") or 0),
+        "remaining": int(data.get("remaining") or 0),
+        "active_trials": data.get("active_trials") or {},
+        "updated_at": data.get("updated_at"),
+        "target": int(data.get("target") or 0),
+    }
+
+
+def send_notification(
+    *,
+    target: str,
+    mux: str,
+    message: str,
+    dry_run: bool,
+) -> None:
+    if dry_run:
+        print(f"notification_dry_run={message}", flush=True)
+        return
+    if not NOTIFIER.exists():
+        raise RuntimeError(f"Missing smux notifier: {NOTIFIER}")
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(NOTIFIER),
+            "--target",
+            target,
+            "--mode",
+            "immediate",
+            "--mux",
+            mux,
+            "--message",
+            message,
+            "--verify-submit-retries",
+            "8",
+            "--delay-seconds",
+            "1",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=45,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(f"smux notification failed: {detail}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Watch a BrowseComp-250 Star run")
     parser.add_argument("run_dir", type=Path)
@@ -46,11 +117,19 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=15.0)
     parser.add_argument("--stale-seconds", type=float, default=600.0)
     parser.add_argument("--status-out", type=Path)
+    parser.add_argument("--failure-confirmations", type=int, default=3)
+    parser.add_argument("--notify-target")
+    parser.add_argument("--notify-mux", default="smux", choices=["auto", "smux", "tmux"])
+    parser.add_argument("--notify-prefix", default="vllm_handler")
+    parser.add_argument("--dry-run-notify", action="store_true")
     args = parser.parse_args()
+    if args.failure_confirmations < 1:
+        parser.error("--failure-confirmations must be at least 1")
 
     run_dir = args.run_dir.resolve()
     source = run_dir / "status.json"
     output = args.status_out or (run_dir / "watcher_status.json")
+    consecutive_problem_checks = 0
 
     while True:
         now = time.time()
@@ -64,8 +143,9 @@ def main() -> int:
         else:
             problems.append("status_missing")
 
-        state = str(data.get("state") or "starting")
-        updated_at = parse_time(data.get("updated_at"))
+        normalized = normalized_status(data)
+        state = str(normalized["state"])
+        updated_at = parse_time(normalized.get("updated_at"))
         age = max(0.0, now - updated_at) if updated_at else None
         if state not in TERMINAL_STATES and age is not None and age > args.stale_seconds:
             problems.append(f"no_progress_for_{int(age)}s")
@@ -77,10 +157,11 @@ def main() -> int:
             "checked_at": datetime.now(UTC).isoformat(),
             "run_dir": str(run_dir),
             "state": state,
-            "completed": int(data.get("completed") or 0),
-            "failed": int(data.get("failed") or 0),
-            "remaining": int(data.get("remaining") or 0),
-            "active_trials": data.get("active_trials") or {},
+            "completed": int(normalized["completed"]),
+            "failed": int(normalized["failed"]),
+            "remaining": int(normalized["remaining"]),
+            "target": int(normalized["target"]),
+            "active_trials": normalized["active_trials"],
             "status_age_seconds": age,
             "runner_pid": args.pid,
             "problems": problems,
@@ -90,8 +171,36 @@ def main() -> int:
         print(json.dumps(watcher, sort_keys=True), flush=True)
 
         if watcher["done"]:
+            if args.notify_target:
+                message = (
+                    f"{args.notify_prefix}_done: guided training reached "
+                    f"{watcher['completed']}/{watcher['target']}; failed={watcher['failed']}; "
+                    f"status={output}"
+                )
+                send_notification(
+                    target=args.notify_target,
+                    mux=args.notify_mux,
+                    message=message,
+                    dry_run=args.dry_run_notify,
+                )
             return 0 if not problems and watcher["failed"] == 0 else 1
         if problems:
+            consecutive_problem_checks += 1
+        else:
+            consecutive_problem_checks = 0
+        if consecutive_problem_checks >= args.failure_confirmations:
+            if args.notify_target:
+                message = (
+                    f"{args.notify_prefix}_alert: guided training needs attention at "
+                    f"{watcher['completed']}/{watcher['target']}; "
+                    f"problems={','.join(problems)}; status={output}"
+                )
+                send_notification(
+                    target=args.notify_target,
+                    mux=args.notify_mux,
+                    message=message,
+                    dry_run=args.dry_run_notify,
+                )
             return 2
         time.sleep(args.interval)
 

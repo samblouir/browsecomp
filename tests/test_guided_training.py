@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from browsecomp250.agent.runner import SCRIPTED_FINAL_SYSTEM_PROMPT
 from browsecomp250.guided_training import (
     audit_system_messages,
@@ -156,16 +158,18 @@ def test_label_checker_ignores_procedural_number_matching_numeric_answer() -> No
     ) == []
 
 
-def test_compiler_uses_exact_route_queries_when_no_mapped_sources() -> None:
+def test_compiler_supplies_route_queries_without_brittle_exact_match_gate() -> None:
     route, full = _records(sources=False)
     steps, _ = compile_guided_steps(route, full)
 
-    query_steps = [step for step in steps if step.get("required_queries")]
-    assert [step["required_queries"] for step in query_steps] == [
-        ["rare 1901"],
-        ["archive 1901"],
-        ["site:x 1901"],
-    ]
+    query_steps = [step for step in steps if step["id"].startswith("guide_search_rung_")]
+    assert len(query_steps) == 3
+    assert [
+        query
+        for step in query_steps
+        for query in json.loads(step["instruction"].split("\n", 1)[1])["queries"]
+    ] == ["rare 1901", "archive 1901", "site:x 1901"]
+    assert all("required_queries" not in step for step in query_steps)
     assert any(step["allowed_actions"] == ["ask_external_model"] for step in steps)
 
 
