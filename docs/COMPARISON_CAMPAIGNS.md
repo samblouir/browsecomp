@@ -26,6 +26,22 @@ For Star, GPT-5.6, Fable 5, and Grok 4.5:
 
 Each model gets its own config and run name. Do not overwrite one run directory with another.
 
+## Accuracy reporting
+
+Do not use completed-only accuracy as a headline while a batch is still in
+flight. Report a fixed denominator:
+
+- `correct / assigned`, with wrong, failed, and pending counts shown separately;
+- `strict_first_terminal` for development history, where timeout, error, and
+  no-final records are incorrect; and
+- `best_observed_after_repair` only as a development ceiling, never as pass@1.
+
+`graded_first_completion` and `graded_latest_completion` deliberately exclude
+terminal failures. They are diagnostic views and must not be described as
+benchmark accuracy. The campaign summary also reports correct coverage against
+all 250 questions so an incomplete run cannot appear complete by shrinking its
+denominator.
+
 ## Interleaving
 
 Live web evidence changes. Prefer one of:
