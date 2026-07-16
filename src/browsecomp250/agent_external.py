@@ -362,6 +362,21 @@ class AgentExternalModelBroker:
             events=events,
             require_citations=helper_agent_config.require_citations,
         )
+        if not strategy_mode and outcome.status != "completed":
+            partial = self._partial_timeout_result(
+                namespace=namespace,
+                events=events,
+                error=f"Star helper ended with status {outcome.status}",
+            )
+            partial["citations"] = list(
+                dict.fromkeys([*partial.get("citations", []), *outcome.citations])
+            )
+            partial["usage"] = result.get("usage")
+            partial["agent"] = result.get("agent")
+            partial["exact_answer"] = outcome.exact_answer
+            partial["confidence"] = outcome.confidence
+            partial["partial_evidence_recovered"] = True
+            return partial
         if not strategy_mode:
             return result
         strategy_error = self._strategy_quality_error(

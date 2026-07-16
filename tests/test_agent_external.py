@@ -113,6 +113,35 @@ class _ValidStrategyRunner(_NoCitationRunner):
         return outcome
 
 
+class _NoFinalEvidenceRunner(_FakeRunner):
+    async def run(self, question: str, *, request_namespace: str) -> AgentOutcome:
+        outcome = await super().run(question, request_namespace=request_namespace)
+        self.event_sink(
+            {
+                "event": "model_response",
+                "assistant_reasoning": "Candidate Ada remains useful but needs one source.",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "search",
+                            "arguments": '{"query":"Ada archive"}',
+                        }
+                    }
+                ],
+            }
+        )
+        self.event_sink(
+            {
+                "event": "action_completed",
+                "result": {"page": {"final_url": "https://source.test/ada"}},
+            }
+        )
+        outcome.status = "no_final"
+        outcome.exact_answer = None
+        outcome.citations = []
+        return outcome
+
+
 @pytest.mark.asyncio
 async def test_agent_external_broker_forces_star2_tools_and_runs_concurrently() -> None:
     _FakeRunner.configurations = []
@@ -236,6 +265,35 @@ async def test_agent_external_broker_rejects_uncited_helper_final() -> None:
     assert result[0]["ok"] is False
     assert result[0]["status"] == "failed"
     assert result[0]["error"] == "Star helper final answer omitted required citations"
+
+
+@pytest.mark.asyncio
+async def test_agent_external_broker_preserves_no_final_research_evidence() -> None:
+    broker = AgentExternalModelBroker(
+        ExternalModelConfig(enabled=True, mode="agent", agent_api_key="real-key"),
+        AgentConfig(require_citations=True),
+        BrowserConfig(),
+        search_provider=object(),
+        page_fetcher=object(),
+        model_client=_FakeModelClient(),
+        runner_factory=_NoFinalEvidenceRunner,
+    )
+
+    result = await broker.ask_many(
+        [{"query": "Research the candidate"}],
+        request_namespace="test:no-final-evidence",
+    )
+
+    assert result[0]["ok"] is False
+    assert result[0]["partial_evidence_recovered"] is True
+    assert "Candidate Ada" in result[0]["content"]
+    assert result[0]["agent_search_queries"] == ["Ada archive"]
+    assert result[0]["citations"] == ["https://source.test/ada"]
+    assert result[0]["usage"] == {
+        "prompt_tokens": 20,
+        "completion_tokens": 10,
+        "total_tokens": 30,
+    }
 
 
 @pytest.mark.asyncio
