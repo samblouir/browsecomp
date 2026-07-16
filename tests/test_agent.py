@@ -1093,6 +1093,26 @@ def test_search_strategy_parser_returns_only_novel_queries() -> None:
     ) == ["entity history explorer"]
 
 
+def test_search_strategy_parser_recovers_double_escaped_json() -> None:
+    result = {
+        "ok": True,
+        "content": (
+            r"{\"analysis\":\"domain translation\",\"queries\":["
+            r"\"curated transcription factor registry 2018\","
+            r"\"author research group biography\"]}"
+        ),
+    }
+
+    assert AgentRunner._strategy_queries_from_result(
+        result,
+        prior_queries=[],
+        limit=4,
+    ) == [
+        "curated transcription factor registry 2018",
+        "author research group biography",
+    ]
+
+
 def test_search_strategy_parser_falls_back_to_helper_executed_queries() -> None:
     result = {
         "ok": True,
@@ -2369,6 +2389,8 @@ async def test_repeated_search_uses_one_external_strategy_recovery(tmp_path: Pat
         "candidate chronicler entity earliest account",
     ]
     assert len(broker.calls) == 1
+    assert len(broker.calls[0][0]) == 2
+    assert {request["task_mode"] for request in broker.calls[0][0]} == {"strategy"}
     assert broker.calls[0][1].endswith(":search-strategy-recovery")
     tool_results = [
         row["content"]
@@ -2534,7 +2556,7 @@ async def test_forced_final_nonfinal_action_uses_external_rescue(tmp_path: Path)
     assert outcome.status == "completed"
     assert outcome.exact_answer == "Answer"
     assert outcome.search_calls == 1
-    assert outcome.external_model_calls == 3
+    assert outcome.external_model_calls == 4
 
 
 @pytest.mark.asyncio

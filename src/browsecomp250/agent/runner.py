@@ -520,7 +520,7 @@ class AgentRunner:
                     with contextlib.suppress(asyncio.CancelledError):
                         await strategy_task
                     raise
-                external_model_calls += 1
+                external_model_calls += max(1, int(strategy_result.get("attempted") or 1))
                 last_external_completion_at = time.perf_counter()
                 transcript.append(
                     {
@@ -1826,6 +1826,22 @@ class AgentRunner:
                 continue
             if isinstance(value, dict):
                 objects.append(value)
+        if objects or r"\"" not in text:
+            return objects
+        start = text.find(r"{\"")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            marker = "__BC250_INNER_QUOTE__"
+            escaped = text[start : end + 1]
+            normalized = re.sub(r'\\{3}"', marker, escaped)
+            normalized = normalized.replace(r"\"", '"').replace(marker, r"\"")
+            try:
+                value = json.loads(normalized)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if isinstance(value, dict):
+                    objects.append(value)
         return objects
 
     @classmethod
@@ -1915,38 +1931,58 @@ class AgentRunner:
                 },
             }
         )
+        common_system = (
+            "You are a query-strategy controller for an audited public-web research task. "
+            "Do not search for benchmark dumps, canaries, leaked questions, or reference "
+            "answers. The primary researcher is repeating low-yield searches. Do not "
+            "inherit its leading hypothesis. Extract up to three viable underlying entities "
+            "from all evidence and independent reviews, including the strongest alternative, "
+            "then design genuinely different retrieval routes that discriminate among them "
+            "and resolve the requested relation. Prefer entity-plus-role, attribution, "
+            "history, source-language, primary-record, and contrastive-candidate queries. "
+            "Treat constrained related entities as search anchors: when the target is "
+            "unknown, identify the rarest collaborator, author, spouse, artifact, event, "
+            "quotation, or dated source first and traverse that relation back to the target. "
+            "Translate scholarly paraphrases into field vocabulary (for example curated "
+            "database, experimentally validated, catalog, registry, corpus, revision, or "
+            "open-access paper), then enumerate authors and test them against the other "
+            "relations. A publication matching only one clue is candidate generation, not "
+            "identity proof. For multi-anchor distance clues, use geo_search with the "
+            "stated expected distances instead of search snippets or city-level pages. "
+            "Do not infer nationality from birthplace or primary occupation from one artifact. "
+            "For a historical attribution, put a broad subject history or origins query "
+            "first; do not lead with answer-shaped wording such as 'first person credited.' "
+            "Put the highest-yield unresolved-relation query first. Use one entity per "
+            "query, no OR chains, and at most twelve terms per query. Do not "
+            "paraphrase the full clue repeatedly, and do not create novelty by merely "
+            "changing quotes, punctuation, or date ranges. Do not copy any phrase longer "
+            "than three words from the question into a query. Return exactly one JSON "
+            "object and no markdown."
+        )
+        strategy_roles = [
+            (
+                "Domain-vocabulary translator",
+                "Infer several plausible technical, historical, cultural, institutional, or "
+                "commercial domains behind the paraphrased clues. Translate each clue into the "
+                "specialist nouns likely to occur in primary sources. Every query must add a "
+                "domain term absent from the benchmark wording and must identify an artifact, "
+                "source class, or named candidate rather than quote the clue.",
+            ),
+            (
+                "Relation-graph inverter",
+                "Treat the question as a graph. Start from the rarest constrained related entity "
+                "or dated artifact, enumerate names, then traverse toward the requested target. "
+                "Produce candidate-centric and source-centric queries that test different edges. "
+                "Do not reuse the primary researcher's leading candidate unless a direct source "
+                "in the supplied evidence supports at least two hard relations.",
+            ),
+        ]
         requests = [
             {
                 "task_mode": "strategy",
-                "system": (
-                    "You are a query-strategy controller for an audited public-web research task. "
-                    "Do not search for benchmark dumps, canaries, leaked questions, or reference "
-                    "answers. The primary researcher is repeating low-yield searches. Do not "
-                    "inherit its leading hypothesis. Extract up to three viable underlying entities "
-                    "from all evidence and independent reviews, including the strongest alternative, "
-                    "then design genuinely different retrieval routes that discriminate among them "
-                    "and resolve the requested relation. Prefer entity-plus-role, attribution, "
-                    "history, source-language, primary-record, and contrastive-candidate queries. "
-                    "Treat constrained related entities as search anchors: when the target is "
-                    "unknown, identify the rarest collaborator, author, spouse, artifact, event, "
-                    "quotation, or dated source first and traverse that relation back to the target. "
-                    "Translate scholarly paraphrases into field vocabulary (for example curated "
-                    "database, experimentally validated, catalog, registry, corpus, revision, or "
-                    "open-access paper), then enumerate authors and test them against the other "
-                    "relations. A publication matching only one clue is candidate generation, not "
-                    "identity proof. For multi-anchor distance clues, use geo_search with the "
-                    "stated expected distances instead of search snippets or city-level pages. "
-                    "Do not infer nationality from birthplace or primary occupation from one artifact. "
-                    "For a historical attribution, put a broad subject history or origins query "
-                    "first; do not lead with answer-shaped wording such as 'first person credited.' "
-                    "Put the highest-yield unresolved-relation query first. Use one entity per "
-                    "query, no OR chains, and at most twelve terms per query. Do not "
-                    "paraphrase the full clue repeatedly, and do not create novelty by merely "
-                    "changing quotes, punctuation, or date ranges. Return exactly one JSON object "
-                    "and no markdown."
-                ),
+                "system": f"{common_system}\n\nSpecialized role: {role}. {role_task}",
                 "query": (
-                    f"Return exactly this schema with {limit} concise public-web queries: "
+                    f"Return exactly this schema with up to {limit} concise public-web queries: "
                     '{"analysis":"brief diagnosis","entity_candidates":["candidate"],'
                     '"queries":["query 1","query 2"]}. Every query must test a different semantic '
                     "route and target the unresolved answer rather than re-verifying clues that are "
@@ -1955,18 +1991,35 @@ class AgentRunner:
                 ),
                 "context": context,
             }
+            for role, role_task in strategy_roles
         ]
         results = await self.external_model.ask_many(
             requests,
             request_namespace=request_namespace + ":search-strategy-recovery",
         )
-        result = results[0] if results else {"ok": False, "error": "empty strategy result"}
-        queries = self._strategy_queries_from_result(
-            result,
-            prior_queries=prior_queries,
-            limit=limit,
-        )
-        return queries, result
+        queries: list[str] = []
+        comparison_queries = list(prior_queries)
+        for result in results:
+            role_queries = self._strategy_queries_from_result(
+                result,
+                prior_queries=comparison_queries,
+                limit=limit - len(queries),
+            )
+            queries.extend(role_queries)
+            comparison_queries.extend(role_queries)
+            if len(queries) >= limit:
+                break
+        combined = {
+            "ok": bool(queries),
+            "status": "succeeded" if queries else "failed",
+            "attempted": len(results),
+            "request_id": ",".join(str(result.get("request_id") or "") for result in results),
+            "content": "\n".join(str(result.get("content") or "") for result in results),
+            "results": results,
+        }
+        if not queries:
+            combined["error"] = "strategy roles returned no novel queries"
+        return queries, combined
 
     @staticmethod
     def _batched_action_size(action: AgentAction) -> int:
