@@ -120,6 +120,7 @@ _STARTS_WITH_WORD = re.compile(
     flags=re.I,
 )
 _ANSWER_WORD = re.compile(r"[a-z0-9]+(?:['’-][a-z0-9]+)*", flags=re.I)
+_CONSENSUS_WORD = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*", flags=re.UNICODE)
 
 
 class AgentRunner:
@@ -765,6 +766,8 @@ class AgentRunner:
                     result=rescue_result,
                 )
             automatic_page_inspection_succeeded = False
+            consensus: dict[str, Any] | None = None
+            force_final_after_external_consensus = False
             try:
                 if duplicate_action:
                     remaining_page_budget = max(
@@ -1205,6 +1208,42 @@ class AgentRunner:
                             step=step,
                             passage_count=len(evidence_highlights),
                         )
+                    consensus = self._external_answer_consensus(
+                        consultations,
+                        inspected_pages=evidence_pages,
+                    )
+                    if consensus is not None:
+                        surface_errors = self._surface_answer_constraint_errors(
+                            question,
+                            str(consensus["exact_answer"]),
+                        )
+                        if surface_errors:
+                            result["independent_external_consultation"][
+                                "answer_consensus_rejected"
+                            ] = {
+                                **consensus,
+                                "violations": surface_errors,
+                            }
+                            self._emit(
+                                "external_consensus_rejected",
+                                step=step,
+                                violations=surface_errors,
+                            )
+                        else:
+                            result["independent_external_consultation"][
+                                "evidence_backed_answer_consensus"
+                            ] = {
+                                **consensus,
+                                "instruction": (
+                                    "Two independent Star-2 research branches reached the same "
+                                    "exact answer, and at least one source they cited was opened "
+                                    "successfully. Reconcile this candidate with the supplied "
+                                    "evidence, then return the final action on the next turn. Do "
+                                    "not run another discovery search merely to restate the same "
+                                    "hypothesis."
+                                ),
+                            }
+                            force_final_after_external_consensus = True
                     self._emit(
                         "automatic_external_completed",
                         step=step,
@@ -1234,6 +1273,16 @@ class AgentRunner:
                         "forced_final_released_after_new_evidence",
                         step=step,
                         action=action.action,
+                    )
+                if force_final_after_external_consensus:
+                    assert consensus is not None
+                    force_final = True
+                    self._emit(
+                        "external_consensus_finalization_requested",
+                        step=step,
+                        exact_answer=str(consensus["exact_answer"]),
+                        agreement_count=int(consensus["agreement_count"]),
+                        supporting_citation_count=len(consensus["supporting_citations"]),
                     )
                 self._check_budgets(
                     search_calls,
@@ -2001,6 +2050,113 @@ class AgentRunner:
                 if len(urls) >= limit:
                     return urls
         return urls
+
+    @classmethod
+    def _external_answer_consensus(
+        cls,
+        consultations: list[dict[str, Any]],
+        *,
+        inspected_pages: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Return exact Star-2 agreement only when a cited page was actually opened."""
+
+        inspected_urls: set[str] = set()
+        for page in inspected_pages:
+            if not isinstance(page, dict) or page.get("error") or not page.get("text"):
+                continue
+            for key in ("requested_url", "final_url"):
+                normalized_url = cls._evidence_url_key(str(page.get(key) or ""))
+                if normalized_url:
+                    inspected_urls.add(normalized_url)
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        seen_request_ids: set[str] = set()
+        for consultation in consultations:
+            if (
+                not consultation.get("ok")
+                or consultation.get("status") != "succeeded"
+                or consultation.get("model") != "frontierrl/star-2"
+            ):
+                continue
+            request_id = str(consultation.get("request_id") or "").strip()
+            if not request_id or request_id in seen_request_ids:
+                continue
+            seen_request_ids.add(request_id)
+            exact_answer = str(consultation.get("exact_answer") or "").strip()
+            normalized_answer = cls._normalize_consensus_answer(exact_answer)
+            if not normalized_answer or _ABSTENTION_ANSWER.match(exact_answer):
+                continue
+            grouped.setdefault(normalized_answer, []).append(consultation)
+
+        qualifying = [items for items in grouped.values() if len(items) >= 2]
+        if not qualifying:
+            return None
+        qualifying.sort(
+            key=lambda items: (
+                -len(items),
+                -sum(cls._consensus_confidence(item) for item in items),
+                cls._normalize_consensus_answer(str(items[0].get("exact_answer") or "")),
+            )
+        )
+        agreed = sorted(
+            qualifying[0],
+            key=cls._consensus_confidence,
+            reverse=True,
+        )
+        cited_urls = list(
+            dict.fromkeys(
+                str(citation).strip()
+                for item in agreed
+                for citation in item.get("citations") or []
+                if isinstance(citation, str)
+                and citation.strip().startswith(("http://", "https://"))
+            )
+        )
+        supporting_citations = [
+            citation
+            for citation in cited_urls
+            if cls._evidence_url_key(citation) in inspected_urls
+        ]
+        if not supporting_citations:
+            return None
+        return {
+            "exact_answer": str(agreed[0]["exact_answer"]).strip(),
+            "agreement_count": len(agreed),
+            "request_ids": [
+                str(item.get("request_id") or "") for item in agreed if item.get("request_id")
+            ],
+            "supporting_citations": supporting_citations,
+        }
+
+    @staticmethod
+    def _normalize_consensus_answer(answer: str) -> str:
+        words = _CONSENSUS_WORD.findall(answer.casefold())
+        if words[:1] == ["the"] and len(words) > 1:
+            words = words[1:]
+        return " ".join(words)
+
+    @staticmethod
+    def _consensus_confidence(consultation: dict[str, Any]) -> float:
+        try:
+            return float(consultation.get("confidence") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _evidence_url_key(url: str) -> str:
+        parsed = urlsplit(url.strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return ""
+        host = (parsed.hostname or "").casefold()
+        if host.startswith("www."):
+            host = host[4:]
+        try:
+            parsed_port = parsed.port
+        except ValueError:
+            return ""
+        port = f":{parsed_port}" if parsed_port else ""
+        path = unquote(parsed.path or "/").rstrip("/") or "/"
+        return urlunsplit(("https", host + port, path, parsed.query, ""))
 
     @classmethod
     def _looks_like_query_mirror_url(cls, question: str, url: str) -> bool:

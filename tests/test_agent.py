@@ -212,6 +212,75 @@ class AutomaticExternalModel:
         return None
 
 
+class ConsensusToolModel:
+    def __init__(self):
+        self.calls = []
+        self.responses = iter(
+            [
+                ModelResponse(
+                    content="",
+                    raw_message={
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-search-a",
+                                "type": "function",
+                                "function": {
+                                    "name": "search",
+                                    "arguments": '{"query":"first discriminating clue"}',
+                                },
+                            }
+                        ],
+                    },
+                ),
+                ModelResponse(
+                    content="",
+                    raw_message={
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-search-b",
+                                "type": "function",
+                                "function": {
+                                    "name": "search",
+                                    "arguments": '{"query":"second independent clue"}',
+                                },
+                            }
+                        ],
+                    },
+                ),
+                ModelResponse(
+                    content="",
+                    raw_message={
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-final",
+                                "type": "function",
+                                "function": {
+                                    "name": "final",
+                                    "arguments": (
+                                        '{"explanation":"reconciled helper agreement with the '
+                                        'opened source","exact_answer":"Candidate Answer",'
+                                        '"confidence":84,"citations":['
+                                        '"https://source.test/evidence"]}'
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                ),
+            ]
+        )
+
+    async def chat(self, messages, **kwargs):
+        self.calls.append((deepcopy(messages), deepcopy(kwargs)))
+        return next(self.responses)
+
+    async def close(self):
+        return None
+
+
 class DuplicateSearchModel:
     def __init__(self):
         self.responses = iter(
@@ -480,6 +549,28 @@ class StructuredConsultationBroker:
                 }
             )
         return results
+
+
+class ConsensusExternalModelBroker:
+    async def ask_many(self, requests, *, request_namespace):
+        return [
+            {
+                "ok": True,
+                "status": "succeeded",
+                "request_id": f"{request_namespace}:helper-{index}",
+                "provider": "frontierrl-agent",
+                "model": "frontierrl/star-2",
+                "content": (
+                    "Independent evidence supports Candidate Answer. "
+                    "https://source.test/evidence"
+                ),
+                "exact_answer": "Candidate Answer",
+                "confidence": 80 - index,
+                "citations": ["https://source.test/evidence"],
+                "agent_search_queries": [],
+            }
+            for index, _ in enumerate(requests, start=1)
+        ]
 
 
 class RepairingExternalModelBroker:
@@ -1264,6 +1355,63 @@ def test_search_many_is_rejected_before_overspending_budget(tmp_path: Path) -> N
     )
 
 
+def test_external_answer_consensus_requires_matching_star2_answers_and_opened_citation() -> None:
+    consultations = [
+        {
+            "ok": True,
+            "status": "succeeded",
+            "model": "frontierrl/star-2",
+            "request_id": "helper-a",
+            "exact_answer": "The Vasco da Gama Pillar",
+            "confidence": 82,
+            "citations": ["https://www.example.test/evidence/"],
+        },
+        {
+            "ok": True,
+            "status": "succeeded",
+            "model": "frontierrl/star-2",
+            "request_id": "helper-b",
+            "exact_answer": "Vasco da Gama Pillar",
+            "confidence": 79,
+            "citations": ["https://other.test/background"],
+        },
+    ]
+    pages = [
+        {
+            "requested_url": "http://example.test/evidence",
+            "final_url": "https://www.example.test/evidence/",
+            "text": "A directly inspected source passage.",
+        }
+    ]
+    consensus = AgentRunner._external_answer_consensus(
+        consultations,
+        inspected_pages=pages,
+    )
+    assert consensus == {
+        "exact_answer": "The Vasco da Gama Pillar",
+        "agreement_count": 2,
+        "request_ids": ["helper-a", "helper-b"],
+        "supporting_citations": ["https://www.example.test/evidence/"],
+    }
+
+    assert AgentRunner._external_answer_consensus(
+        [{**consultations[0], "model": "gpt-5.6"}, consultations[1]],
+        inspected_pages=pages,
+    ) is None
+    assert AgentRunner._external_answer_consensus(
+        [consultations[0], {**consultations[1], "exact_answer": "A Different Pillar"}],
+        inspected_pages=pages,
+    ) is None
+    assert AgentRunner._external_answer_consensus(
+        consultations,
+        inspected_pages=[],
+    ) is None
+    assert AgentRunner._external_answer_consensus(
+        [consultations[0], {**consultations[1], "request_id": "helper-a"}],
+        inspected_pages=pages,
+    ) is None
+
+
 def test_search_many_is_clipped_to_remaining_budget(tmp_path: Path) -> None:
     runner = AgentRunner(
         ModelConfig(api_base="http://model.test/v1", api_key="k", model="m"),
@@ -1408,6 +1556,57 @@ async def test_agent_executes_structured_external_search_strategy(tmp_path: Path
     assert any('"strategy_search"' in row for row in tool_results)
     assert any('"related_source_page_inspection"' in row for row in tool_results)
     assert any('"verified_evidence_highlights"' in row for row in tool_results)
+
+
+@pytest.mark.asyncio
+async def test_evidence_backed_star2_consensus_forces_next_star7_final_turn(
+    tmp_path: Path,
+) -> None:
+    model = ConsensusToolModel()
+    events = []
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="frontierrl/star-7",
+            protocol="tools",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=5,
+            max_search_calls=6,
+            automatic_external_after_search_calls=2,
+            automatic_external_requests=2,
+            automatic_page_inspection_after_search_actions=0,
+            automatic_page_inspection_count=2,
+            max_batch_size=4,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        LinkedSuccessfulBrowser(),
+        model_client=model,
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            mode="agent",
+            agent_model="frontierrl/star-2",
+            max_calls_per_task=4,
+        ),
+        external_model_broker=ConsensusExternalModelBroker(),
+        event_sink=events.append,
+    )
+    outcome = await runner.run("Question", request_namespace="run:item:consensus")
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Candidate Answer"
+    assert model.calls[2][1]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "final"},
+    }
+    consensus_events = [
+        event for event in events if event["event"] == "external_consensus_finalization_requested"
+    ]
+    assert len(consensus_events) == 1
+    assert consensus_events[0]["agreement_count"] == 2
+    assert consensus_events[0]["supporting_citation_count"] == 1
 
 
 @pytest.mark.asyncio

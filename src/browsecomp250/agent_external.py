@@ -238,6 +238,9 @@ class AgentExternalModelBroker:
             "provider": "frontierrl-agent",
             "model": self.model_config.model,
             "content": content,
+            "exact_answer": outcome.exact_answer,
+            "confidence": outcome.confidence,
+            "citations": list(outcome.citations),
             "agent_search_queries": self._search_queries_from_transcript(outcome.transcript),
             "usage": {
                 "prompt_tokens": outcome.usage.input_tokens,

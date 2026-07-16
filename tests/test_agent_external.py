@@ -105,6 +105,9 @@ async def test_agent_external_broker_forces_star2_tools_and_runs_concurrently() 
     assert _FakeRunner.maximum_active == 2
     assert all(result["ok"] for result in results)
     assert all(result["model"] == "frontierrl/star-2" for result in results)
+    assert all(result["exact_answer"] == "Ada" for result in results)
+    assert all(result["confidence"] == 80 for result in results)
+    assert all(result["citations"] == ["https://source.test/evidence"] for result in results)
     assert results[0]["content"].startswith('{"analysis"')
     assert results[0]["agent_search_queries"] == ["entity history", "candidate archive"]
     config = _FakeRunner.configurations[0]
