@@ -121,6 +121,30 @@ _STARTS_WITH_WORD = re.compile(
 )
 _ANSWER_WORD = re.compile(r"[a-z0-9]+(?:['’-][a-z0-9]+)*", flags=re.I)
 _CONSENSUS_WORD = re.compile(r"[^\W_]+(?:['’-][^\W_]+)*", flags=re.UNICODE)
+_IDENTITY_QUESTION = re.compile(
+    r"(?:^\s*who\b|\b(?:tell\s+me|determine|find\s+out)\s+who\b|"
+    r"\bwhat\s+(?:is|was)\s+(?:the\s+)?name\s+of|"
+    r"what\s+(?:is|was)\s+(?:this|the)\s+(?:person|individual|celebrity|actor|actress|"
+    r"author|artist|scientist|researcher|politician|athlete)['’]s\s+name|"
+    r"\bidentify\s+(?:this|the)\s+(?:person|individual|celebrity|actor|actress|author|"
+    r"artist|scientist|researcher|politician|athlete|professor|director)|"
+    r"^\s*(?:what|which)\s+(?:person|individual|celebrity|actor|actress|author|artist|"
+    r"scientist|researcher|politician|athlete|professor|director))\b",
+    flags=re.I,
+)
+_GENERIC_IDENTITY_NOUN = re.compile(
+    r"^(?:the|a|an)?\s*(?:(?:likely|possible|probable|specific|unnamed|implied|"
+    r"famous|notable|leading|well[- ]known)\s+)*"
+    r"(?:person|individual|celebrity|woman|man|female|male|actor|actress|artist|"
+    r"playwright|figure|candidate|producer|author|scientist|researcher|politician|athlete|"
+    r"professor|academic|director|filmmaker|musician|singer|footballer|player|model|"
+    r"personality|inventor|doctor|physician|engineer|architect|composer)\b",
+    flags=re.I,
+)
+_GENERIC_IDENTITY_QUALIFIER = re.compile(
+    r"\b(?:who|that|which|likely|possibly|probably|specific|unnamed|implied|candidate)\b",
+    flags=re.I,
+)
 
 
 class AgentRunner:
@@ -604,6 +628,91 @@ class AgentRunner:
                         violations=surface_errors,
                     )
                     continue
+                answer_type_errors = self._answer_type_constraint_errors(
+                    question,
+                    str(action.payload.get("exact_answer") or ""),
+                )
+                if answer_type_errors:
+                    correction = (
+                        "Final answer does not satisfy the requested answer type: "
+                        + "; ".join(answer_type_errors)
+                        + ". Continue research using a genuinely different semantic route. Return "
+                        "one named entity or other concrete value, not a description of the clues."
+                    )
+                    errors.append(correction)
+                    raw_tool_calls = assistant_message.get("tool_calls")
+                    if (
+                        protocol in {"tools", "auto"}
+                        and isinstance(raw_tool_calls, list)
+                        and raw_tool_calls
+                    ):
+                        messages.append(assistant_message)
+                        rejected_tool_call = raw_tool_calls[0]
+                        correction_message = {
+                            "role": "tool",
+                            "tool_call_id": rejected_tool_call.get("id", f"call-{step}"),
+                            "name": str(
+                                (rejected_tool_call.get("function") or {}).get("name")
+                                or "final"
+                            ),
+                            "content": canonical_json({"ok": False, "error": correction}),
+                        }
+                    else:
+                        messages.append({"role": "assistant", "content": response.content})
+                        correction_message = {"role": "user", "content": correction}
+                    messages.append(correction_message)
+                    transcript.append(correction_message)
+                    chain_delta_messages = [correction_message]
+                    self._emit(
+                        "answer_type_final_rejected",
+                        step=step,
+                        violations=answer_type_errors,
+                    )
+                    continue
+                if self.agent_config.require_opened_citation_support:
+                    evidence_errors = self._final_evidence_constraint_errors(
+                        question,
+                        str(action.payload.get("exact_answer") or ""),
+                        action.payload.get("citations") or [],
+                        opened,
+                    )
+                    if evidence_errors:
+                        correction = (
+                            "Final answer is not grounded in an inspected citation: "
+                            + "; ".join(evidence_errors)
+                            + ". Open the strongest cited source or search a different route, then "
+                            "return an exact answer that the inspected evidence actually names."
+                        )
+                        errors.append(correction)
+                        raw_tool_calls = assistant_message.get("tool_calls")
+                        if (
+                            protocol in {"tools", "auto"}
+                            and isinstance(raw_tool_calls, list)
+                            and raw_tool_calls
+                        ):
+                            messages.append(assistant_message)
+                            rejected_tool_call = raw_tool_calls[0]
+                            correction_message = {
+                                "role": "tool",
+                                "tool_call_id": rejected_tool_call.get("id", f"call-{step}"),
+                                "name": str(
+                                    (rejected_tool_call.get("function") or {}).get("name")
+                                    or "final"
+                                ),
+                                "content": canonical_json({"ok": False, "error": correction}),
+                            }
+                        else:
+                            messages.append({"role": "assistant", "content": response.content})
+                            correction_message = {"role": "user", "content": correction}
+                        messages.append(correction_message)
+                        transcript.append(correction_message)
+                        chain_delta_messages = [correction_message]
+                        self._emit(
+                            "citation_support_final_rejected",
+                            step=step,
+                            violations=evidence_errors,
+                        )
+                        continue
                 outcome = self._final_outcome(
                     action,
                     started=started,
@@ -723,15 +832,21 @@ class AgentRunner:
                     }
                 )
                 if rescue_action is not None:
-                    surface_errors = self._surface_answer_constraint_errors(
+                    answer_errors = self._surface_answer_constraint_errors(
                         question,
                         str(rescue_action.payload.get("exact_answer") or ""),
                     )
-                    if surface_errors:
+                    answer_errors.extend(
+                        self._answer_type_constraint_errors(
+                            question,
+                            str(rescue_action.payload.get("exact_answer") or ""),
+                        )
+                    )
+                    if answer_errors:
                         pending_surface_constraint_correction = (
-                            "The independent finalizer proposed an answer that violates an explicit "
-                            "surface constraint: "
-                            + "; ".join(surface_errors)
+                            "The independent finalizer proposed an answer that violates the "
+                            "question's answer constraints: "
+                            + "; ".join(answer_errors)
                             + ". Do not accept or rationalize that candidate."
                         )
                         errors.append(pending_surface_constraint_correction)
@@ -739,13 +854,13 @@ class AgentRunner:
                             **rescue_result,
                             "ok": False,
                             "error": pending_surface_constraint_correction,
-                            "surface_constraint_violations": surface_errors,
+                            "answer_constraint_violations": answer_errors,
                         }
                         rescue_action = None
                         self._emit(
                             "automatic_finalization_rescue_rejected",
                             step=step,
-                            violations=surface_errors,
+                            violations=answer_errors,
                             result=rescue_result,
                         )
                 if rescue_action is not None:
@@ -2398,15 +2513,16 @@ class AgentRunner:
                 action = parse_json_action(str(result.get("content") or ""))
                 if action.action != "final":
                     raise ProtocolError("external finalizer returned a non-final action")
-                self._require_concrete_final(action)
+                self._require_valid_final_for_question(action, question)
             except ProtocolError as exc:
                 result = {**result, "ok": False, "error": str(exc)}
+                action = None
 
         remaining_budget = request_budget - attempted
         if action is None or not result.get("ok"):
             repair_result: dict[str, Any] | None = None
             if remaining_budget > 0:
-                candidates = self._concrete_review_actions(reviews)
+                candidates = self._concrete_review_actions(reviews, question=question)
                 allowed_answers = list(
                     dict.fromkeys(
                         str(candidate.payload.get("exact_answer") or "").strip()
@@ -2467,7 +2583,7 @@ class AgentRunner:
                         repaired_action = parse_json_action(str(repair_result.get("content") or ""))
                         if repaired_action.action != "final":
                             raise ProtocolError("external repair returned a non-final action")
-                        self._require_concrete_final(repaired_action)
+                        self._require_valid_final_for_question(repaired_action, question)
                         action = repaired_action
                         result = {
                             **result,
@@ -2477,11 +2593,12 @@ class AgentRunner:
                         }
                     except ProtocolError as exc:
                         result = {**result, "error": str(exc)}
+                        action = None
 
             if action is None or self._is_abstention_answer(
                 str(action.payload.get("exact_answer") or "")
             ):
-                fallback = self._best_review_fallback(reviews)
+                fallback = self._best_review_fallback(reviews, question=question)
                 if fallback is None:
                     return None, {**result, "ok": False}
                 action = fallback
@@ -2505,6 +2622,94 @@ class AgentRunner:
         if cls._is_abstention_answer(answer):
             raise ProtocolError("final requires one concrete answer; abstentions are invalid")
 
+    @classmethod
+    def _require_valid_final_for_question(cls, action: AgentAction, question: str) -> None:
+        cls._require_concrete_final(action)
+        violations = cls._answer_type_constraint_errors(
+            question,
+            str(action.payload.get("exact_answer") or ""),
+        )
+        if violations:
+            raise ProtocolError("; ".join(violations))
+
+    @staticmethod
+    def _answer_type_constraint_errors(question: str, answer: str) -> list[str]:
+        """Reject obvious category restatements when the question asks for an identity."""
+
+        normalized = re.sub(r"\s+", " ", answer.strip())
+        if not normalized or not _IDENTITY_QUESTION.search(question):
+            return []
+        generic = _GENERIC_IDENTITY_NOUN.match(normalized)
+        if not generic:
+            return []
+        tail = normalized[generic.end() :].strip()
+        word_count = len(_CONSENSUS_WORD.findall(normalized))
+        if word_count <= 3 or _GENERIC_IDENTITY_QUALIFIER.search(tail):
+            return [
+                "the question asks for a named identity, but the answer is only a category "
+                "description or clue restatement"
+            ]
+        return []
+
+    @classmethod
+    def _final_evidence_constraint_errors(
+        cls,
+        question: str,
+        answer: str,
+        citations: list[Any],
+        opened: dict[str, PageDocument],
+    ) -> list[str]:
+        """Require the proposed exact answer to occur in a cited, inspected relevant page."""
+
+        citation_keys = {
+            key
+            for citation in citations
+            if isinstance(citation, str)
+            for key in [cls._evidence_url_key(citation)]
+            if key
+        }
+        if not citation_keys:
+            return ["no valid public citation URL was supplied"]
+
+        cited_documents: list[PageDocument] = []
+        seen_documents: set[int] = set()
+        for document in opened.values():
+            document_keys = {
+                cls._evidence_url_key(document.requested_url),
+                cls._evidence_url_key(document.final_url),
+            }
+            if not citation_keys.intersection(document_keys) or id(document) in seen_documents:
+                continue
+            seen_documents.add(id(document))
+            cited_documents.append(document)
+        if not cited_documents:
+            return ["none of the cited pages was opened and inspected"]
+
+        normalized_answer = " ".join(_CONSENSUS_WORD.findall(answer.casefold()))
+        if not normalized_answer:
+            return ["the proposed exact answer has no searchable content"]
+        require_literal_hashtag = answer.strip().startswith("#")
+        for document in cited_documents:
+            page = {
+                "title": document.title,
+                "text": document.text,
+                "requested_url": document.requested_url,
+                "final_url": document.final_url,
+            }
+            raw_evidence = f"{document.title}\n{document.text}".casefold()
+            normalized_evidence = " ".join(_CONSENSUS_WORD.findall(raw_evidence))
+            answer_present = (
+                answer.strip().casefold() in raw_evidence
+                if require_literal_hashtag
+                else normalized_answer in normalized_evidence
+            )
+            if answer_present and cls._page_matches_question(question, page):
+                return []
+        return [
+            "no cited, inspected page both names the proposed exact answer and materially "
+            "matches the question"
+        ]
+
     @staticmethod
     def _surface_answer_constraint_errors(question: str, answer: str) -> list[str]:
         answer_words = _ANSWER_WORD.findall(answer)
@@ -2526,7 +2731,12 @@ class AgentRunner:
         return errors
 
     @classmethod
-    def _concrete_review_actions(cls, reviews: list[dict[str, Any]]) -> list[AgentAction]:
+    def _concrete_review_actions(
+        cls,
+        reviews: list[dict[str, Any]],
+        *,
+        question: str = "",
+    ) -> list[AgentAction]:
         actions: list[AgentAction] = []
         for review in reviews:
             if not review.get("ok"):
@@ -2535,7 +2745,7 @@ class AgentRunner:
                 action = parse_json_action(str(review.get("content") or ""))
                 if action.action != "final":
                     continue
-                cls._require_concrete_final(action)
+                cls._require_valid_final_for_question(action, question)
             except ProtocolError:
                 continue
             actions.append(action)
@@ -2545,8 +2755,10 @@ class AgentRunner:
     def _best_review_fallback(
         cls,
         reviews: list[dict[str, Any]],
+        *,
+        question: str = "",
     ) -> AgentAction | None:
-        candidates = cls._concrete_review_actions(reviews)
+        candidates = cls._concrete_review_actions(reviews, question=question)
         cited_candidates = [
             candidate
             for candidate in candidates

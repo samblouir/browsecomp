@@ -91,9 +91,9 @@ report: {}
 @pytest.mark.parametrize(
     ("name", "strategy_recovery", "max_calls", "automatic_requests", "rescue_seconds"),
     [
-        ("star-dev-baseline.yaml", False, 3, 1, 0),
-        ("star-smoke.yaml", False, 3, 1, 0),
-        ("star-headline.yaml", False, 8, 1, 900),
+        ("star-dev-baseline.yaml", True, 3, 1, 0),
+        ("star-smoke.yaml", True, 3, 1, 0),
+        ("star-headline.yaml", True, 8, 1, 900),
     ],
 )
 def test_star_profiles_use_selective_star2_help(

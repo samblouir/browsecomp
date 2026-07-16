@@ -394,6 +394,36 @@ class AbstentionThenConcreteModel:
         return None
 
 
+class DescriptorThenNamedEntityModel:
+    def __init__(self):
+        self.calls = []
+        self.responses = iter(
+            [
+                ModelResponse(
+                    content=(
+                        '{"action":"final","explanation":"restated clues",'
+                        '"exact_answer":"The celebrity (likely an actress) who produced the play",'
+                        '"confidence":70,"citations":["https://example.test/weak"]}'
+                    )
+                ),
+                ModelResponse(
+                    content=(
+                        '{"action":"final","explanation":"named candidate",'
+                        '"exact_answer":"Ada Lovelace","confidence":65,'
+                        '"citations":["https://example.test/strong"]}'
+                    )
+                ),
+            ]
+        )
+
+    async def chat(self, messages, **kwargs):
+        self.calls.append((deepcopy(messages), deepcopy(kwargs)))
+        return next(self.responses)
+
+    async def close(self):
+        return None
+
+
 class FakeSearch:
     def __init__(self, tmp_path: Path):
         self.config = SearchConfig(provider="searxng", cache_path=tmp_path / "s.sqlite3")
@@ -1244,6 +1274,135 @@ def test_abstention_answers_are_detected(answer: str) -> None:
 
 def test_concrete_answers_are_not_abstentions() -> None:
     assert not AgentRunner._is_abstention_answer("Arbitrary Concrete Entity")
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "The celebrity (likely an actress) who produced the play",
+        "A famous actress",
+        "The person",
+        "Professor",
+        "The specific playwright that was prosecuted",
+    ],
+)
+def test_identity_questions_reject_category_restatements(answer: str) -> None:
+    errors = AgentRunner._answer_type_constraint_errors(
+        "What is the name of this celebrity?",
+        answer,
+    )
+    assert errors
+
+
+@pytest.mark.parametrize(
+    "question,answer",
+    [
+        ("What is the name of this celebrity?", "Tzeni Karezi"),
+        ("Who wrote the paper?", "Ada Lovelace"),
+        ("What title is described?", "The Artist"),
+        ("Which title was published by an author who taught in Paris?", "The Artist"),
+        ("What is the name of this celebrity?", "The actress Tzeni Karezi"),
+    ],
+)
+def test_identity_answer_validation_preserves_named_or_nonidentity_answers(
+    question: str,
+    answer: str,
+) -> None:
+    assert not AgentRunner._answer_type_constraint_errors(question, answer)
+
+
+def test_final_evidence_requires_answer_in_cited_opened_relevant_page() -> None:
+    question = "What is the name of the scientist who wrote the analytical engine notes?"
+    supported = PageDocument(
+        requested_url="https://example.test/ada",
+        final_url="https://example.test/ada",
+        title="Ada Lovelace and the analytical engine",
+        text="Scientist and writer Ada Lovelace wrote notes about the analytical engine.",
+        content_type="text/plain",
+        status_code=200,
+    )
+    irrelevant = PageDocument(
+        requested_url="https://example.test/dictionary",
+        final_url="https://example.test/dictionary",
+        title="Scientist definition",
+        text="A scientist conducts research.",
+        content_type="text/plain",
+        status_code=200,
+    )
+
+    assert not AgentRunner._final_evidence_constraint_errors(
+        question,
+        "Ada Lovelace",
+        ["https://example.test/ada"],
+        {supported.final_url: supported},
+    )
+    assert AgentRunner._final_evidence_constraint_errors(
+        question,
+        "Ada Lovelace",
+        ["https://example.test/dictionary"],
+        {irrelevant.final_url: irrelevant},
+    )
+    assert AgentRunner._final_evidence_constraint_errors(
+        question,
+        "Ada Lovelace",
+        ["https://example.test/ada"],
+        {},
+    ) == ["none of the cited pages was opened and inspected"]
+
+
+def test_final_evidence_preserves_literal_hashtag_relation() -> None:
+    question = "What hashtag did the actor use to announce the project?"
+    page = PageDocument(
+        requested_url="https://example.test/post",
+        final_url="https://example.test/post",
+        title="Actor announces project",
+        text="The actor used #NewBeginnings to announce the project.",
+        content_type="text/plain",
+        status_code=200,
+    )
+    opened = {page.final_url: page}
+
+    assert not AgentRunner._final_evidence_constraint_errors(
+        question,
+        "#NewBeginnings",
+        [page.final_url],
+        opened,
+    )
+    assert AgentRunner._final_evidence_constraint_errors(
+        question,
+        "#ActorName",
+        [page.final_url],
+        opened,
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_retries_category_restatement_until_named_identity(tmp_path: Path) -> None:
+    model = DescriptorThenNamedEntityModel()
+    events: list[dict] = []
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+        ),
+        AgentConfig(max_steps=2, require_citations=True),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=model,
+        event_sink=events.append,
+    )
+
+    outcome = await runner.run("What is the name of this celebrity?")
+
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Ada Lovelace"
+    assert any(event["event"] == "answer_type_final_rejected" for event in events)
+    correction = model.calls[1][0][-1]
+    assert correction["role"] == "user"
+    assert "named entity" in correction["content"]
 
 
 def test_surface_answer_constraints_enforce_literal_edge_words() -> None:

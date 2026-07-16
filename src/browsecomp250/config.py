@@ -300,6 +300,7 @@ class AgentConfig(StrictConfigModel):
     max_history_chars: int = Field(default=500_000, ge=10_000)
     parse_retries: int = Field(default=2, ge=0, le=10)
     require_citations: bool = True
+    require_opened_citation_support: bool = False
     enable_search_many: bool = True
     enable_open_many: bool = True
     max_batch_size: int = Field(default=5, ge=1, le=20)

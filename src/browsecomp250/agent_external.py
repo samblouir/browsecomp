@@ -133,6 +133,13 @@ class AgentExternalModelBroker:
             "Act as an independent research helper for another agent.",
             "Use the supplied public-web tools whenever they can verify a material claim.",
             (
+                "Before the first search, use your own knowledge only to form several specific "
+                "named hypotheses; treat them as unverified leads, never as evidence. Search those "
+                "names and their rarest relations instead of repeatedly pasting the clue bundle. "
+                "If no name comes to mind, vary geography, source language, historical vocabulary, "
+                "and the constrained collaborator or artifact until searches expose named entities."
+            ),
+            (
                 "Before finalizing, run independent searches that try to falsify the leading "
                 "candidate and test whether every hard clue preserves its exact relation type. "
                 "Treat the clues as a conjunction: do not rescue a materially contradicted "
@@ -146,7 +153,9 @@ class AgentExternalModelBroker:
                 "Complete through the final tool. Put the full requested deliverable in final."
                 "explanation; if the request specifies JSON, place that exact JSON object in the "
                 "explanation with no surrounding markdown. Put only a concise recommendation in "
-                "final.exact_answer."
+                "final.exact_answer. When the task asks who someone is or asks for a name, the exact "
+                "answer must be a specific named entity. A category such as 'the actress,' a clue "
+                "restatement, or a phrase beginning 'the celebrity who' is not an answer."
             ),
         ]
         if system:
