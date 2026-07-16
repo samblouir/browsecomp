@@ -789,6 +789,7 @@
         "provider": {
           "default": "brave",
           "enum": [
+            "bing_ssh",
             "brave",
             "google_chrome",
             "hybrid",
@@ -1004,6 +1005,49 @@
           "minimum": 0,
           "title": "Google Chrome Max Retries",
           "type": "integer"
+        },
+        "bing_ssh_host": {
+          "default": "",
+          "title": "Bing Ssh Host",
+          "type": "string"
+        },
+        "bing_ssh_bin": {
+          "default": "ssh",
+          "title": "Bing Ssh Bin",
+          "type": "string"
+        },
+        "bing_ssh_remote_curl_bin": {
+          "default": "curl",
+          "title": "Bing Ssh Remote Curl Bin",
+          "type": "string"
+        },
+        "bing_ssh_connect_timeout_seconds": {
+          "default": 8,
+          "maximum": 60,
+          "minimum": 1,
+          "title": "Bing Ssh Connect Timeout Seconds",
+          "type": "integer"
+        },
+        "bing_ssh_max_concurrency": {
+          "default": 16,
+          "maximum": 64,
+          "minimum": 1,
+          "title": "Bing Ssh Max Concurrency",
+          "type": "integer"
+        },
+        "bing_ssh_min_interval_seconds": {
+          "default": 0.1,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Bing Ssh Min Interval Seconds",
+          "type": "number"
+        },
+        "bing_ssh_error_cooldown_seconds": {
+          "default": 3.0,
+          "maximum": 60,
+          "minimum": 0,
+          "title": "Bing Ssh Error Cooldown Seconds",
+          "type": "number"
         },
         "yahoo_max_concurrency": {
           "default": 3,

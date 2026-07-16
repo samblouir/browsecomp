@@ -4,6 +4,7 @@ import httpx
 
 from ..config import SearchConfig
 from .base import SearchProvider
+from .bing_ssh import BingSSHSearchProvider
 from .brave import BraveSearchProvider
 from .google_chrome import GoogleChromeSearchProvider
 from .hybrid import HybridSearchProvider
@@ -20,6 +21,7 @@ def create_search_provider(
     config: SearchConfig, client: httpx.AsyncClient | None = None
 ) -> SearchProvider:
     providers = {
+        "bing_ssh": BingSSHSearchProvider,
         "brave": BraveSearchProvider,
         "google_chrome": GoogleChromeSearchProvider,
         "hybrid": HybridSearchProvider,

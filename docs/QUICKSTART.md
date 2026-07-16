@@ -144,6 +144,17 @@ BC250_YAHOO_SSH_HOST=sam-mbp-rev
 The adapter executes bounded, paced `curl` requests over SSH and parses the same
 organic-result HTML locally. The provider and host are recorded in the run lock.
 
+To use Bing's keyless RSS result surface through an authorized SSH host instead:
+
+```dotenv
+BC250_SEARCH_PROVIDER=bing_ssh
+BC250_BING_SSH_HOST=sam-mba15
+```
+
+This path also stays server-side and never launches a user's Chrome profile.
+Bing and Yahoo runs are distinct search-provider strata and must not be merged
+without retaining exact row-level provenance.
+
 ## 5. Configure grading
 
 The smoke profile uses the deterministic diagnostic grader. The headline profile requires the semantic LLM grader.

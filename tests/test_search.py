@@ -7,6 +7,7 @@ import pytest
 
 from browsecomp250.config import SearchConfig
 from browsecomp250.search.base import SearchError
+from browsecomp250.search.bing_ssh import BingSSHSearchProvider
 from browsecomp250.search.brave import BraveSearchProvider
 from browsecomp250.search.google_chrome import GoogleChromeSearchProvider
 from browsecomp250.search.hybrid import HybridSearchProvider
@@ -537,6 +538,89 @@ async def test_yahoo_ssh_adapter_uses_bounded_remote_command(
     assert "phrase%3B+touch+%2Ftmp%2Fno" in remote_command
     assert "'Accept: text/html,application/xhtml+xml'" in remote_command
     await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_bing_ssh_adapter_uses_bounded_escaped_rss_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = b"""\
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0"><channel>
+  <item><title>First result</title><link>https://example.test/first</link>
+    <description>Useful &amp;lt;b&amp;gt;evidence&amp;lt;/b&amp;gt;.</description></item>
+</channel></rss>
+"""
+    captured: tuple[object, ...] = ()
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return document, b""
+
+    async def create_subprocess_exec(*args: object, **kwargs: object) -> FakeProcess:
+        nonlocal captured
+        captured = args
+        assert kwargs["stdout"] == asyncio.subprocess.PIPE
+        assert kwargs["stderr"] == asyncio.subprocess.PIPE
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess_exec)
+    provider = BingSSHSearchProvider(
+        SearchConfig(
+            provider="bing_ssh",
+            bing_ssh_host="remote.test",
+            bing_ssh_min_interval_seconds=0,
+            cache_mode="off",
+            cache_path=tmp_path / "cache.sqlite3",
+        )
+    )
+
+    results = await provider.search("exact <|channel|> phrase; touch /tmp/no", count=3)
+
+    assert results[0].url == "https://example.test/first"
+    assert results[0].snippet == "Useful evidence."
+    assert results[0].source == "bing_ssh"
+    assert "remote.test" in captured
+    remote_command = str(captured[-1])
+    assert "format=rss" in remote_command
+    assert "<|channel|>" not in remote_command
+    assert "phrase%3B+touch+%2Ftmp%2Fno" in remote_command
+    assert "'Accept: application/rss+xml,application/xml,text/xml'" in remote_command
+    await provider.close()
+
+
+@pytest.mark.parametrize(
+    "document,match",
+    [
+        ("<html>challenge</html>", "unexpected RSS root"),
+        ("<!DOCTYPE rss><rss><channel /></rss>", "forbidden doctype"),
+        ("<rss><channel /></rss>", "no organic results"),
+    ],
+)
+def test_bing_ssh_rejects_non_result_feeds(document: str, match: str) -> None:
+    with pytest.raises(SearchError, match=match):
+        BingSSHSearchProvider._parse_rss(document, count=10, offset=0)
+
+
+def test_bing_ssh_parser_honors_result_count_and_offset() -> None:
+    items = "".join(
+        f"<item><title>Result {index}</title><link>https://example.test/{index}</link>"
+        f"<description>Evidence {index}</description></item>"
+        for index in range(6)
+    )
+    results = BingSSHSearchProvider._parse_rss(
+        f"<rss><channel>{items}</channel></rss>",
+        count=2,
+        offset=3,
+    )
+
+    assert [item.url for item in results] == [
+        "https://example.test/0",
+        "https://example.test/1",
+    ]
+    assert [item.rank for item in results] == [7, 8]
 
 
 @pytest.mark.asyncio

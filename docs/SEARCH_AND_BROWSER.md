@@ -123,6 +123,12 @@ egress host. It does not open Chrome or create a managed browser profile. SSH
 connect limits, remote request limits, response-size limits, pacing, and
 concurrency are enforced by the adapter and recorded in the protocol lock.
 
+`bing_ssh` uses Bing's server-rendered RSS result surface through the same kind
+of explicitly authorized SSH egress. It rejects HTML challenge pages, malformed
+feeds, doctypes, empty result sets, oversized responses, and non-HTTP result
+links. Its host, pacing, concurrency, and timeout limits are frozen in the run
+lock, so Bing and Yahoo rows remain separately attributable benchmark strata.
+
 The Star smoke, development, and headline profiles default to `brave` but honor
 an explicit `BC250_SEARCH_PROVIDER` override. The resolved provider is frozen in
 the run lock. Any provider change within a larger development campaign must be

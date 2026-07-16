@@ -75,6 +75,13 @@ search:
   google_chrome_timeout_seconds: 45
   google_chrome_connect_timeout_seconds: 5
   google_chrome_max_retries: 0
+  bing_ssh_host: "${BC250_BING_SSH_HOST:-sam-mba15}"
+  bing_ssh_bin: "${BC250_BING_SSH_BIN:-ssh}"
+  bing_ssh_remote_curl_bin: "${BC250_BING_SSH_REMOTE_CURL_BIN:-curl}"
+  bing_ssh_connect_timeout_seconds: ${BC250_BING_SSH_CONNECT_TIMEOUT_SECONDS:-8}
+  bing_ssh_max_concurrency: ${BC250_BING_SSH_MAX_CONCURRENCY:-16}
+  bing_ssh_min_interval_seconds: ${BC250_BING_SSH_MIN_INTERVAL_SECONDS:-0.1}
+  bing_ssh_error_cooldown_seconds: ${BC250_BING_SSH_ERROR_COOLDOWN_SECONDS:-3.0}
   yahoo_max_concurrency: ${BC250_YAHOO_MAX_CONCURRENCY:-3}
   yahoo_min_interval_seconds: ${BC250_YAHOO_MIN_INTERVAL_SECONDS:-0.35}
   yahoo_error_cooldown_seconds: ${BC250_YAHOO_ERROR_COOLDOWN_SECONDS:-3.0}

@@ -114,6 +114,7 @@ class ModelConfig(StrictConfigModel):
 
 class SearchConfig(StrictConfigModel):
     provider: Literal[
+        "bing_ssh",
         "brave",
         "google_chrome",
         "hybrid",
@@ -158,6 +159,13 @@ class SearchConfig(StrictConfigModel):
     google_chrome_timeout_seconds: float = Field(default=45, gt=0, le=300)
     google_chrome_connect_timeout_seconds: int = Field(default=5, ge=1, le=60)
     google_chrome_max_retries: int = Field(default=0, ge=0, le=3)
+    bing_ssh_host: str = ""
+    bing_ssh_bin: str = "ssh"
+    bing_ssh_remote_curl_bin: str = "curl"
+    bing_ssh_connect_timeout_seconds: int = Field(default=8, ge=1, le=60)
+    bing_ssh_max_concurrency: int = Field(default=16, ge=1, le=64)
+    bing_ssh_min_interval_seconds: float = Field(default=0.1, ge=0, le=10)
+    bing_ssh_error_cooldown_seconds: float = Field(default=3.0, ge=0, le=60)
     yahoo_max_concurrency: int = Field(default=3, ge=1, le=8)
     yahoo_min_interval_seconds: float = Field(default=0.35, ge=0, le=10)
     yahoo_error_cooldown_seconds: float = Field(default=3.0, ge=0, le=60)
@@ -177,6 +185,7 @@ class SearchConfig(StrictConfigModel):
 
     def selected_api_key(self) -> str:
         return {
+            "bing_ssh": "",
             "brave": self.brave_api_key,
             "google_chrome": "",
             "hybrid": self.brave_api_key,
