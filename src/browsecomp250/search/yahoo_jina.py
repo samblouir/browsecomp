@@ -12,6 +12,7 @@ _NUMBERED_LINE = re.compile(r"^\s*\d+\.\s+(?P<body>.+)$")
 _MARKDOWN_URL = re.compile(r"\]\((?P<url>https?://[^)\s]+)\)")
 _MARKDOWN_TITLE = re.compile(r"###\s*(?P<title>.*?)\]\(https?://")
 _MARKDOWN_DECORATION = re.compile(r"[*_`]+")
+_CONTROL_TOKEN = re.compile(r"<\|.*?\|>")
 
 
 class YahooJinaSearchProvider(SearchProvider):
@@ -35,6 +36,9 @@ class YahooJinaSearchProvider(SearchProvider):
         self._request_semaphore = asyncio.Semaphore(8)
 
     async def _search_live(self, query: str, count: int, offset: int) -> list[SearchResult]:
+        query = " ".join(_CONTROL_TOKEN.sub(" ", query).split())
+        if not query:
+            raise SearchError("Yahoo/Jina query was empty after control-token cleanup")
         first = offset * count + 1
         target = f"{self.endpoint}?{urlencode({'p': query, 'b': first, 'pz': count})}"
         async with self._request_semaphore:
@@ -47,8 +51,6 @@ class YahooJinaSearchProvider(SearchProvider):
             )
         response.raise_for_status()
         results = self._parse_markdown(response.text, count=count, offset=offset)
-        if not results:
-            raise SearchError("Yahoo/Jina response contained no usable web results")
         return results
 
     @classmethod

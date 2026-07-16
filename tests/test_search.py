@@ -354,6 +354,36 @@ async def test_yahoo_jina_adapter(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_yahoo_jina_cleans_control_tokens_and_does_not_retry_empty_results(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.params["p"] == "exact phrase"
+        return httpx.Response(200, text="## Search Results\n", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = YahooJinaSearchProvider(
+        SearchConfig(
+            provider="yahoo_jina",
+            cache_mode="off",
+            cache_path=tmp_path / "cache.sqlite3",
+            max_retries=4,
+        ),
+        client,
+    )
+
+    results = await provider.search("exact <|channel|> phrase", count=10)
+
+    assert results == []
+    assert calls == 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_yahoo_adapter_unwraps_result_urls(tmp_path: Path) -> None:
     document = """\
 <div id="web"><ol class="searchCenterMiddle">
