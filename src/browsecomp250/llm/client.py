@@ -131,8 +131,7 @@ class OpenAICompatibleClient:
                 )
             except (
                 TimeoutError,
-                httpx.TimeoutException,
-                httpx.NetworkError,
+                httpx.TransportError,
                 httpx.HTTPStatusError,
             ) as exc:
                 last_error = exc

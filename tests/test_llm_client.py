@@ -6,6 +6,7 @@ import json
 import httpx
 import pytest
 
+import browsecomp250.llm.client as client_module
 from browsecomp250.llm.client import ClientSettings, ModelAPIError, OpenAICompatibleClient
 
 
@@ -149,6 +150,50 @@ async def test_nonretryable_api_error_includes_response_detail() -> None:
     )
     with pytest.raises(ModelAPIError, match="unsupported field"):
         await client.chat([{"role": "user", "content": "hello"}])
+    await raw_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_remote_protocol_disconnect_is_retried(monkeypatch) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.RemoteProtocolError(
+                "Server disconnected without sending a response",
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "OK"}}],
+                "usage": {},
+            },
+            request=request,
+        )
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr(client_module.asyncio, "sleep", no_sleep)
+    raw_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = OpenAICompatibleClient(
+        ClientSettings(
+            api_base="https://model.test/v1",
+            api_key="secret",
+            model="model",
+            temperature=0.3,
+            max_output_tokens=16384,
+            timeout_seconds=10,
+            max_retries=1,
+        ),
+        raw_client,
+    )
+    response = await client.chat([{"role": "user", "content": "hello"}])
+    assert response.content == "OK"
+    assert calls == 2
     await raw_client.aclose()
 
 
