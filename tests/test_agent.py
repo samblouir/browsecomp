@@ -430,6 +430,253 @@ async def test_blocking_guidance_adversary_rejects_final_until_corrected(
     assert sum(event["event"] == "blocking_guidance_final_rejected" for event in events) == 1
 
 
+@pytest.mark.asyncio
+async def test_scripted_final_executes_blocking_adversary_repair_before_retry(
+    tmp_path: Path,
+) -> None:
+    source_url = "https://example.test/mapped-source"
+
+    class RepairModel:
+        def __init__(self):
+            final = (
+                '{"action":"final","explanation":"same supported candidate",'
+                '"exact_answer":"Candidate","confidence":90,'
+                f'"citations":["{source_url}"]}}'
+            )
+            self.responses = iter(
+                [
+                    ModelResponse(content=f'{{"action":"open","url":"{source_url}"}}'),
+                    ModelResponse(content=final),
+                    ModelResponse(
+                        content=(
+                            '{"action":"note","text":"The already opened mapped source and '
+                            'identity source jointly support Candidate."}'
+                        )
+                    ),
+                    ModelResponse(content=final),
+                ]
+            )
+
+        async def chat(self, messages, **kwargs):
+            del messages, kwargs
+            return next(self.responses)
+
+        async def close(self):
+            return None
+
+    class BlockingThenPassingBroker:
+        def __init__(self):
+            self.calls = []
+
+        async def ask_many(self, requests, *, request_namespace):
+            self.calls.append((deepcopy(requests), request_namespace))
+            verdict = "BLOCK" if len(self.calls) == 1 else "PASS"
+            return [
+                {
+                    "ok": True,
+                    "request_id": f"review-{len(self.calls)}",
+                    "content": json.dumps(
+                        {
+                            "verdict": verdict,
+                            "observed_stage": "final",
+                            "followed": ["mapped source opened"],
+                            "material_deviations": (
+                                ["source evidence needs synthesis"] if verdict == "BLOCK" else []
+                            ),
+                            "required_next_actions": (
+                                ["Open mapped source 01 and synthesize it with identity evidence."]
+                                if verdict == "BLOCK"
+                                else []
+                            ),
+                            "reason": "Synthesize the inspected source." if verdict == "BLOCK" else "Ready.",
+                        }
+                    ),
+                }
+            ]
+
+    class EvidenceBrowser:
+        async def fetch(self, url):
+            return PageDocument(
+                requested_url=url,
+                final_url=url,
+                title="Mapped evidence",
+                text="Mapped evidence names Candidate and establishes the requested relation.",
+                content_type="text/plain",
+                status_code=200,
+            )
+
+    broker = BlockingThenPassingBroker()
+    events = []
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=8,
+            min_search_calls_before_final=0,
+            require_citations=False,
+            require_opened_citation_support=False,
+            automatic_external_strategy_recovery=False,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        EvidenceBrowser(),
+        model_client=RepairModel(),
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=4,
+        ),
+        external_model_broker=broker,
+        event_sink=events.append,
+    )
+
+    outcome = await runner.run(
+        "Which candidate satisfies the relation?",
+        initial_guidance=f"Open mapped source 01 at {source_url}, then verify and answer.",
+        scripted_guidance_steps=[
+            {
+                "id": "open_mapped_source_01",
+                "allowed_actions": ["open"],
+                "required_urls": [source_url],
+                "instruction": "Open mapped source 01.",
+            },
+            {
+                "id": "finalize",
+                "allowed_actions": ["final"],
+                "instruction": "Return the evidence-grounded exact answer.",
+            },
+        ],
+        blocking_guidance_adversary=True,
+        guidance_adversary_max_checkpoints=0,
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Candidate"
+    assert len(broker.calls) == 2
+    assert "opened_source_inventory" in broker.calls[0][0][0]["context"]
+    scheduled = [
+        event for event in events if event["event"] == "scripted_guidance_final_repair_scheduled"
+    ]
+    assert scheduled[0]["trigger"] == "blocking_adversary"
+    assert scheduled[0]["repair_steps"][0]["allowed_actions"] == ["note"]
+    assert any(
+        event["event"] == "blocking_guidance_final_review_cache_cleared"
+        and event["action"] == "note"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_scripted_unsupported_final_searches_and_opens_before_retry(
+    tmp_path: Path,
+) -> None:
+    source_url = "https://example.test/1"
+
+    class RepairModel:
+        def __init__(self):
+            final = (
+                '{"action":"final","explanation":"The direct source names Artemis Quill",'
+                '"exact_answer":"Artemis Quill","confidence":90,'
+                f'"citations":["{source_url}"]}}'
+            )
+            self.responses = iter(
+                [
+                    ModelResponse(content=final),
+                    ModelResponse(
+                        content=(
+                            '{"action":"search_many","queries":['
+                            '"Artemis Quill rare relation","Artemis Quill direct source",'
+                            '"Artemis Quill contradiction"]}'
+                        )
+                    ),
+                    ModelResponse(
+                        content=(
+                            '{"action":"open_many","urls":['
+                            '"https://example.test/1","https://example.test/2",'
+                            '"https://example.test/3"]}'
+                        )
+                    ),
+                    ModelResponse(content=final),
+                ]
+            )
+
+        async def chat(self, messages, **kwargs):
+            del messages, kwargs
+            return next(self.responses)
+
+        async def close(self):
+            return None
+
+    class EvidenceBrowser:
+        async def fetch(self, url):
+            return PageDocument(
+                requested_url=url,
+                final_url=url,
+                title="Direct answer evidence",
+                text=(
+                    "The rare relation in the question is directly established here. "
+                    "The exact entity named by that relation is Artemis Quill."
+                ),
+                content_type="text/plain",
+                status_code=200,
+            )
+
+    events = []
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=8,
+            min_search_calls_before_final=0,
+            require_citations=True,
+            require_opened_citation_support=True,
+            automatic_external_strategy_recovery=False,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        RecordingSearch(tmp_path),
+        EvidenceBrowser(),
+        model_client=RepairModel(),
+        event_sink=events.append,
+    )
+
+    outcome = await runner.run(
+        "Which exact entity is named by the rare relation in the question?",
+        initial_guidance="Find a direct public source, inspect it, then answer.",
+        scripted_guidance_steps=[
+            {
+                "id": "finalize",
+                "allowed_actions": ["final"],
+                "instruction": "Return the evidence-grounded exact answer.",
+            }
+        ],
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Artemis Quill"
+    assert [
+        event["action"] for event in events if event["event"] == "action_selected"
+    ] == ["final", "search_many", "open_many", "final"]
+    scheduled = [
+        event for event in events if event["event"] == "scripted_guidance_final_repair_scheduled"
+    ]
+    assert scheduled[0]["trigger"] == "citation_support"
+    assert [step["allowed_actions"] for step in scheduled[0]["repair_steps"]] == [
+        ["search_many"],
+        ["open_many"],
+    ]
+
+
 def test_blocking_guidance_review_parses_textual_blocked_fallback() -> None:
     review = AgentRunner._blocking_guidance_review_payload(
         {

@@ -298,6 +298,7 @@ class AgentRunner:
         scripted_final_context_recorded = False
         guidance_adversary_checkpoints = 0
         guidance_final_reviews: dict[str, dict[str, Any]] = {}
+        scripted_final_repairs = 0
         chain_enabled = self.model_config.response_chain and not scripted_guidance_steps
         previous_response_id: str | None = None
         chain_delta_messages: list[dict[str, Any]] | None = None
@@ -1263,6 +1264,39 @@ class AgentRunner:
                                 step=step,
                                 violations=evidence_errors,
                             )
+                            if (
+                                scripted_force_final
+                                and scripted_guidance_steps is not None
+                                and scripted_final_repairs < scripted_step_max_attempts
+                            ):
+                                scripted_final_repairs += 1
+                                repair_steps = self._scripted_final_repair_steps(
+                                    reason=correction,
+                                    required_next_actions=[
+                                        "Search for direct public evidence that names the proposed "
+                                        "answer and establishes the question's discriminating relation, "
+                                        "then open the strongest returned sources."
+                                    ],
+                                    scripted_guidance_steps=scripted_guidance_steps,
+                                    known_urls=scripted_candidate_urls,
+                                    opened=opened,
+                                    proposed_final=action.payload,
+                                    repair_index=scripted_final_repairs,
+                                    max_batch_size=self.agent_config.max_batch_size,
+                                    force_retrieval=True,
+                                )
+                                scripted_guidance_steps[scripted_step_index:scripted_step_index] = (
+                                    repair_steps
+                                )
+                                scripted_step_attempts = 0
+                                scripted_final_context_recorded = False
+                                self._emit(
+                                    "scripted_guidance_final_repair_scheduled",
+                                    step=step,
+                                    trigger="citation_support",
+                                    repair_index=scripted_final_repairs,
+                                    repair_steps=repair_steps,
+                                )
                             continue
                 if (
                     blocking_guidance_adversary
@@ -1369,6 +1403,34 @@ class AgentRunner:
                                 required_next_actions=required_actions,
                             )
                             break
+                        if (
+                            scripted_force_final
+                            and scripted_guidance_steps is not None
+                            and scripted_final_repairs < scripted_step_max_attempts
+                        ):
+                            scripted_final_repairs += 1
+                            repair_steps = self._scripted_final_repair_steps(
+                                reason=correction,
+                                required_next_actions=[str(value) for value in required_actions],
+                                scripted_guidance_steps=scripted_guidance_steps,
+                                known_urls=scripted_candidate_urls,
+                                opened=opened,
+                                proposed_final=action.payload,
+                                repair_index=scripted_final_repairs,
+                                max_batch_size=self.agent_config.max_batch_size,
+                            )
+                            scripted_guidance_steps[scripted_step_index:scripted_step_index] = (
+                                repair_steps
+                            )
+                            scripted_step_attempts = 0
+                            scripted_final_context_recorded = False
+                            self._emit(
+                                "scripted_guidance_final_repair_scheduled",
+                                step=step,
+                                trigger="blocking_adversary",
+                                repair_index=scripted_final_repairs,
+                                repair_steps=repair_steps,
+                            )
                         continue
                 outcome = self._final_outcome(
                     action,
@@ -2356,6 +2418,14 @@ class AgentRunner:
                 if len(evidence_journal) > 40:
                     del evidence_journal[:-40]
 
+            if result.get("ok") and action.action != "final" and guidance_final_reviews:
+                guidance_final_reviews.clear()
+                self._emit(
+                    "blocking_guidance_final_review_cache_cleared",
+                    step=step,
+                    action=action.action,
+                )
+
             if current_scripted_step is not None:
                 if result.get("ok") or current_scripted_step.get("advance_on_attempt") is True:
                     self._emit(
@@ -3021,6 +3091,233 @@ class AgentRunner:
         return [url for url, _ in unique[:limit]]
 
     @classmethod
+    def _scripted_final_repair_steps(
+        cls,
+        *,
+        reason: str,
+        required_next_actions: list[str],
+        scripted_guidance_steps: list[dict[str, Any]],
+        known_urls: list[str],
+        opened: dict[str, PageDocument],
+        proposed_final: dict[str, Any],
+        repair_index: int,
+        max_batch_size: int,
+        force_retrieval: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Turn a blocked scripted final into executable evidence work."""
+
+        required_text = "\n".join(
+            value.strip() for value in required_next_actions if value.strip()
+        )
+        combined = f"{required_text}\n{reason}".strip()
+        normalized = combined.casefold()
+        prefix = f"final_repair_{repair_index:02d}"
+        opened_keys = {
+            key
+            for document in opened.values()
+            for value in (document.requested_url, document.final_url)
+            for key in [cls._evidence_url_key(value)]
+            if key
+        }
+
+        targeted_urls: list[str] = []
+        for match in _PUBLIC_URL.finditer(combined):
+            url = match.group(0).rstrip(".,;:!?)\"'")
+            if cls._evidence_url_key(url):
+                targeted_urls.append(url)
+        for match in re.finditer(r"(?i)\bmapped\s+source\s+0*(\d+)\b", combined):
+            source_index = int(match.group(1))
+            suffix = f"_{source_index:02d}"
+            for step in scripted_guidance_steps:
+                step_id = str(step.get("id") or "")
+                if "open_mapped_source" not in step_id or not step_id.endswith(suffix):
+                    continue
+                urls = step.get("required_urls")
+                if isinstance(urls, list):
+                    targeted_urls.extend(str(value) for value in urls if str(value).strip())
+        citations = proposed_final.get("citations")
+        if isinstance(citations, list):
+            targeted_urls.extend(str(value) for value in citations if str(value).strip())
+
+        deduplicated_targets: list[str] = []
+        target_keys: set[str] = set()
+        for url in targeted_urls:
+            key = cls._evidence_url_key(url)
+            if not key or key in target_keys:
+                continue
+            target_keys.add(key)
+            deduplicated_targets.append(url)
+        unopened_targets = [
+            url
+            for url in deduplicated_targets
+            if cls._evidence_url_key(url) not in opened_keys
+        ][:max_batch_size]
+
+        asks_to_open = bool(re.search(r"\b(open|inspect|read|visit|fetch)\b", normalized))
+        asks_to_search = bool(
+            re.search(r"\b(search|query|look up|discover|falsif|find source)\b", normalized)
+        )
+        asks_to_consult = bool(re.search(r"\b(consult|external|ask)\b", normalized))
+        asks_to_note = bool(re.search(r"\b(note|record|ledger|save|synthesi[sz])\b", normalized))
+
+        if not force_retrieval and asks_to_open and unopened_targets:
+            return [
+                {
+                    "id": prefix + "_open",
+                    "allowed_actions": ["open_many"],
+                    "minimum_batch_size": len(unopened_targets),
+                    "maximum_batch_size": len(unopened_targets),
+                    "required_urls": unopened_targets,
+                    "instruction": (
+                        "Execute the blocking adversary's missing-source inspection before "
+                        "finalizing. Open exactly the public URLs below, then return to final "
+                        "synthesis on the next controller turn.\n"
+                        + canonical_json(
+                            {
+                                "blocking_reason": reason,
+                                "required_next_actions": required_next_actions,
+                                "required_source_urls": unopened_targets,
+                            }
+                        )
+                    ),
+                }
+            ]
+
+        if (
+            not force_retrieval
+            and asks_to_open
+            and deduplicated_targets
+            and not unopened_targets
+        ):
+            return [
+                {
+                    "id": prefix + "_synthesize_opened",
+                    "allowed_actions": ["note"],
+                    "instruction": (
+                        "The source requested by the blocking adversary is already present in "
+                        "the inspected-source inventory. Do not reopen it. Save one compact note "
+                        "that synthesizes its decisive passage with the other identity evidence "
+                        "and resolves the stated blocker before returning to final synthesis.\n"
+                        + canonical_json(
+                            {
+                                "blocking_reason": reason,
+                                "required_next_actions": required_next_actions,
+                                "already_opened_source_urls": deduplicated_targets,
+                            }
+                        )
+                    ),
+                }
+            ]
+
+        if not force_retrieval and asks_to_open:
+            fallback_urls = cls._scripted_open_fallback_urls(
+                known_urls,
+                opened=opened,
+                limit=max_batch_size,
+            )
+            fallback_urls = [
+                url for url in fallback_urls if cls._evidence_url_key(url) not in opened_keys
+            ]
+            if fallback_urls:
+                return [
+                    {
+                        "id": prefix + "_open",
+                        "allowed_actions": ["open_many"],
+                        "minimum_batch_size": len(fallback_urls),
+                        "maximum_batch_size": len(fallback_urls),
+                        "required_urls": fallback_urls,
+                        "instruction": (
+                            "Execute the blocking adversary's source-inspection repair using "
+                            "the strongest unopened public URLs already recovered.\n"
+                            + canonical_json(
+                                {
+                                    "blocking_reason": reason,
+                                    "required_next_actions": required_next_actions,
+                                    "required_source_urls": fallback_urls,
+                                }
+                            )
+                        ),
+                    }
+                ]
+
+        if not force_retrieval and asks_to_consult:
+            return [
+                {
+                    "id": prefix + "_consult",
+                    "allowed_actions": ["ask_external_model"],
+                    "instruction": (
+                        "Consult independent research agents only on the blocking adversary's "
+                        "specific unresolved evidence gap. Require public citation URLs and do "
+                        "not reveal or request a private benchmark label.\n"
+                        + canonical_json(
+                            {
+                                "blocking_reason": reason,
+                                "required_next_actions": required_next_actions,
+                            }
+                        )
+                    ),
+                },
+                {
+                    "id": prefix + "_open_helper_sources",
+                    "allowed_actions": ["open_many"],
+                    "instruction": (
+                        "Open the strongest public source URLs returned by the repair agents. "
+                        "Use exact returned URLs and do not finalize on this turn."
+                    ),
+                },
+            ]
+
+        if not force_retrieval and asks_to_note and not asks_to_search:
+            return [
+                {
+                    "id": prefix + "_note",
+                    "allowed_actions": ["note"],
+                    "instruction": (
+                        "Resolve the blocking adversary's requested synthesis in one compact "
+                        "evidence ledger before returning to final synthesis.\n"
+                        + canonical_json(
+                            {
+                                "blocking_reason": reason,
+                                "required_next_actions": required_next_actions,
+                            }
+                        )
+                    ),
+                }
+            ]
+
+        return [
+            {
+                "id": prefix + "_search",
+                "allowed_actions": ["search_many"],
+                "minimum_batch_size": 3,
+                "maximum_batch_size": min(7, max_batch_size),
+                "instruction": (
+                    "Run 3-7 targeted public-web searches that repair only the rejected final's "
+                    "material evidence gap. Search the proposed candidate with the rarest "
+                    "question relation, seek a direct answer-naming source, and include one "
+                    "contradiction or minimal-pair query. Do not search for benchmark labels, "
+                    "answer dumps, or the private guide.\n"
+                    + canonical_json(
+                        {
+                            "blocking_reason": reason,
+                            "required_next_actions": required_next_actions,
+                        }
+                    )
+                ),
+            },
+            {
+                "id": prefix + "_open_search_results",
+                "allowed_actions": ["open_many"],
+                "instruction": (
+                    "Open the strongest public result URLs from the immediately preceding "
+                    "repair search. Prioritize a page that directly names the proposed answer "
+                    "and establishes the missing relation. Use exact returned URLs and do not "
+                    "finalize on this turn."
+                ),
+            },
+        ]
+
+    @classmethod
     def _blocking_guidance_review_payload(cls, result: dict[str, Any]) -> dict[str, Any]:
         raw_content = str(result.get("content") or "")
         objects = cls._json_objects(raw_content)
@@ -3139,13 +3436,51 @@ class AgentRunner:
             if isinstance(tool_calls, list):
                 row["tool_calls"] = tool_calls[:4]
             recent_trace.append(row)
+        unique_opened: dict[str, PageDocument] = {}
+        for document in opened.values():
+            key = self._evidence_url_key(document.final_url or document.requested_url)
+            if key:
+                unique_opened[key] = document
+        priority_keys: list[str] = []
+        if proposed_final is not None:
+            citations = proposed_final.get("citations")
+            if isinstance(citations, list):
+                priority_keys.extend(
+                    key
+                    for value in citations
+                    for key in [self._evidence_url_key(str(value))]
+                    if key
+                )
+        priority_keys.extend(
+            key
+            for match in _PUBLIC_URL.finditer(guidance)
+            for key in [self._evidence_url_key(match.group(0).rstrip(".,;:!?)\"'"))]
+            if key
+        )
+        selected_keys: list[str] = []
+        seen_keys: set[str] = set()
+        for key in [*priority_keys, *reversed(unique_opened)]:
+            if key not in unique_opened or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            selected_keys.append(key)
+            if len(selected_keys) >= 20:
+                break
         opened_sources = [
+            {
+                "url": unique_opened[key].final_url,
+                "title": unique_opened[key].title,
+                "text": truncate_middle(unique_opened[key].text, 4_000),
+            }
+            for key in selected_keys
+        ]
+        opened_source_inventory = [
             {
                 "url": document.final_url,
                 "title": document.title,
-                "text": truncate_middle(document.text, 2_500),
+                "text_chars": len(document.text),
             }
-            for document in list(opened.values())[-12:]
+            for document in unique_opened.values()
         ]
         context = canonical_json(
             {
@@ -3154,6 +3489,7 @@ class AgentRunner:
                 "research_plan": truncate_middle(guidance, 40_000),
                 "executed_search_queries": search_queries[-60:],
                 "recent_action_and_evidence_trace": recent_trace,
+                "opened_source_inventory": opened_source_inventory,
                 "opened_sources": opened_sources,
                 "saved_notes": notes[-12:],
                 "proposed_final": proposed_final,
@@ -3187,6 +3523,9 @@ class AgentRunner:
                     "other sources normally corroborate clues. Another source crediting a different "
                     "person with a different historical milestone is not by itself a contradiction. "
                     "Give concrete next actions, not vague criticism. "
+                    "Never request opening a URL already listed in opened_source_inventory. "
+                    "When that source's text is present, synthesize it; when its text is "
+                    "insufficient, request a different public source or a targeted search. "
                     + phase_instruction
                 ),
                 "query": (
