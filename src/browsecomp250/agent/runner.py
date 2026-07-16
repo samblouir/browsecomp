@@ -2186,6 +2186,35 @@ class AgentRunner:
                 result=result,
             )
 
+            if (
+                current_scripted_step is not None
+                and current_scripted_step.get("id") == "answer_blind_query_strategy"
+                and scripted_guidance_steps is not None
+                and scripted_step_index + 1 < len(scripted_guidance_steps)
+            ):
+                strategy_queries = self._strategy_queries_from_external_result(result)
+                next_step = scripted_guidance_steps[scripted_step_index + 1]
+                if (
+                    strategy_queries
+                    and next_step.get("id") == "strategy_query_execution"
+                ):
+                    next_step["required_queries"] = strategy_queries
+                    next_step["minimum_batch_size"] = len(strategy_queries)
+                    next_step["maximum_batch_size"] = len(strategy_queries)
+                    next_step["instruction"] = (
+                        str(next_step.get("instruction") or "").rstrip()
+                        + " Execute exactly the model-generated queries below; they are planning "
+                        "leads, not factual evidence.\n"
+                        + canonical_json({"required_strategy_queries": strategy_queries})
+                    )
+                    self._emit(
+                        "scripted_guidance_dynamic_contract_bound",
+                        step=step,
+                        source_scripted_step_id=current_scripted_step.get("id"),
+                        target_scripted_step_id=next_step.get("id"),
+                        required_queries=strategy_queries,
+                    )
+
             if result.get("ok") and action.action in {
                 "search",
                 "search_many",
@@ -2598,7 +2627,11 @@ class AgentRunner:
         if action.action not in allowed_actions:
             return False
         minimum_batch_size = scripted_step.get("minimum_batch_size")
-        if isinstance(minimum_batch_size, int) and minimum_batch_size > 0:
+        maximum_batch_size = scripted_step.get("maximum_batch_size")
+        if (
+            (isinstance(minimum_batch_size, int) and minimum_batch_size > 0)
+            or (isinstance(maximum_batch_size, int) and maximum_batch_size > 0)
+        ):
             batch_key = {
                 "search_many": "queries",
                 "open_many": "urls",
@@ -2606,7 +2639,63 @@ class AgentRunner:
                 "ask_external_model": "requests",
             }.get(action.action)
             batch = action.payload.get(batch_key) if batch_key else None
-            if not isinstance(batch, list) or len(batch) < minimum_batch_size:
+            if not isinstance(batch, list):
+                return False
+            if (
+                isinstance(minimum_batch_size, int)
+                and minimum_batch_size > 0
+                and len(batch) < minimum_batch_size
+            ):
+                return False
+            if (
+                isinstance(maximum_batch_size, int)
+                and maximum_batch_size > 0
+                and len(batch) > maximum_batch_size
+            ):
+                return False
+        required_request_task_mode = scripted_step.get("required_request_task_mode")
+        if isinstance(required_request_task_mode, str) and required_request_task_mode.strip():
+            requests = action.payload.get("requests")
+            required_mode = required_request_task_mode.strip().casefold()
+            if (
+                action.action != "ask_external_model"
+                or not isinstance(requests, list)
+                or not requests
+                or any(
+                    not isinstance(request, dict)
+                    or str(request.get("task_mode") or "research").strip().casefold()
+                    != required_mode
+                    for request in requests
+                )
+            ):
+                return False
+        required_request_tags = scripted_step.get("required_request_tags")
+        if isinstance(required_request_tags, list) and required_request_tags:
+            requests = action.payload.get("requests")
+            normalized_tags = [
+                str(value).strip().casefold()
+                for value in required_request_tags
+                if str(value).strip()
+            ]
+            if (
+                action.action != "ask_external_model"
+                or not isinstance(requests, list)
+                or len(requests) != len(normalized_tags)
+                or not normalized_tags
+            ):
+                return False
+            matched_tags: set[str] = set()
+            for request in requests:
+                if not isinstance(request, dict):
+                    return False
+                request_text = "\n".join(
+                    str(request.get(key) or "") for key in ("query", "system", "context")
+                ).casefold()
+                tags_in_request = [tag for tag in normalized_tags if tag in request_text]
+                if len(tags_in_request) != 1:
+                    return False
+                matched_tags.add(tags_in_request[0])
+            if matched_tags != set(normalized_tags):
                 return False
         required_urls = scripted_step.get("required_urls")
         if isinstance(required_urls, list) and required_urls:
@@ -2652,6 +2741,29 @@ class AgentRunner:
             if not required_query_set or not required_query_set.issubset(supplied_query_set):
                 return False
         return True
+
+    @classmethod
+    def _strategy_queries_from_external_result(cls, result: dict[str, Any]) -> list[str]:
+        consultations = result.get("consultations")
+        if not isinstance(consultations, list):
+            return []
+        for consultation in consultations:
+            if not isinstance(consultation, dict):
+                continue
+            content = str(consultation.get("content") or "")
+            for payload in cls._json_objects(content):
+                values = payload.get("queries")
+                if not isinstance(values, list):
+                    continue
+                queries = [
+                    " ".join(str(value).split()).strip()
+                    for value in values
+                    if str(value).strip()
+                ]
+                queries = list(dict.fromkeys(queries))[:7]
+                if 3 <= len(queries) <= 7:
+                    return queries
+        return []
 
     @classmethod
     def _blocking_guidance_review_payload(cls, result: dict[str, Any]) -> dict[str, Any]:

@@ -498,6 +498,95 @@ def test_scripted_guidance_step_enforces_minimum_parallel_batch() -> None:
     )
 
 
+def test_scripted_guidance_step_enforces_strategy_mode_and_maximum_batch() -> None:
+    step = {
+        "allowed_actions": ["ask_external_model"],
+        "minimum_batch_size": 1,
+        "maximum_batch_size": 1,
+        "required_request_task_mode": "strategy",
+    }
+
+    assert AgentRunner._action_matches_scripted_step(
+        AgentAction(
+            action="ask_external_model",
+            payload={"requests": [{"task_mode": "strategy", "query": "plan routes"}]},
+        ),
+        step,
+    )
+    assert not AgentRunner._action_matches_scripted_step(
+        AgentAction(
+            action="ask_external_model",
+            payload={"requests": [{"query": "research instead"}]},
+        ),
+        step,
+    )
+    assert not AgentRunner._action_matches_scripted_step(
+        AgentAction(
+            action="ask_external_model",
+            payload={
+                "requests": [
+                    {"task_mode": "strategy", "query": "route one"},
+                    {"task_mode": "strategy", "query": "route two"},
+                ]
+            },
+        ),
+        step,
+    )
+
+
+def test_strategy_queries_from_external_result_extracts_exact_plan() -> None:
+    result = {
+        "consultations": [
+            {
+                "content": (
+                    '{"hypotheses":["Ada Lovelace","Charles Babbage"],'
+                    '"queries":["Ada Lovelace archive",'
+                    '"Charles Babbage museum","Analytical Engine catalog"],'
+                    '"source_classes":["archive","museum"],'
+                    '"discriminators":["date","provenance"]}'
+                )
+            }
+        ]
+    }
+
+    assert AgentRunner._strategy_queries_from_external_result(result) == [
+        "Ada Lovelace archive",
+        "Charles Babbage museum",
+        "Analytical Engine catalog",
+    ]
+
+
+def test_scripted_guidance_step_requires_one_unique_role_tag_per_request() -> None:
+    step = {
+        "allowed_actions": ["ask_external_model"],
+        "minimum_batch_size": 2,
+        "maximum_batch_size": 2,
+        "required_request_task_mode": "research",
+        "required_request_tags": ["[role:first]", "[role:second]"],
+    }
+    valid = AgentAction(
+        action="ask_external_model",
+        payload={
+            "requests": [
+                {"task_mode": "research", "query": "[role:first] inspect archives"},
+                {"task_mode": "research", "query": "[role:second] invert the relation"},
+            ]
+        },
+    )
+    duplicated = AgentAction(
+        action="ask_external_model",
+        payload={
+            "requests": [
+                {"task_mode": "research", "query": "[role:first] inspect archives"},
+                {"task_mode": "research", "query": "[role:first] repeat archives"},
+            ]
+        },
+    )
+
+    assert AgentRunner._action_matches_scripted_step(valid, step)
+    assert not AgentRunner._action_matches_scripted_step(duplicated, step)
+
+
 def test_single_source_attribution_question_requires_one_answer_naming_document() -> None:
     question = (
         "Several clues identify an entity. According to an article published in 2021, the first "

@@ -8,6 +8,7 @@ import pytest
 from browsecomp250.agent_external import AgentExternalModelBroker
 from browsecomp250.config import AgentConfig, BrowserConfig, ExternalModelConfig
 from browsecomp250.types import AgentOutcome, ModelResponse, Usage
+from browsecomp250.util import canonical_json
 
 
 class _FakeModelClient:
@@ -94,6 +95,21 @@ class _NoCitationRunner(_FakeRunner):
     async def run(self, question: str, *, request_namespace: str) -> AgentOutcome:
         outcome = await super().run(question, request_namespace=request_namespace)
         outcome.citations = []
+        return outcome
+
+
+class _ValidStrategyRunner(_NoCitationRunner):
+    async def run(self, question: str, *, request_namespace: str) -> AgentOutcome:
+        outcome = await super().run(question, request_namespace=request_namespace)
+        outcome.explanation = (
+            '{"hypotheses":["Jan Gehl","Boulevard Anspach"],'
+            '"queries":["Jan Gehl pedestrian archive","Boulevard Anspach planning history",'
+            '"Brussels student itinerary PDF"],'
+            '"source_classes":["municipal archive","university itinerary"],'
+            '"discriminators":["project identity","tour schedule"]}'
+        )
+        outcome.exact_answer = "query strategy"
+        outcome.response_text = outcome.explanation
         return outcome
 
 
@@ -224,7 +240,7 @@ async def test_agent_external_broker_rejects_uncited_helper_final() -> None:
 
 @pytest.mark.asyncio
 async def test_agent_external_strategy_skips_factual_answer_evidence_gates() -> None:
-    _NoCitationRunner.configurations = []
+    _ValidStrategyRunner.configurations = []
     broker = AgentExternalModelBroker(
         ExternalModelConfig(enabled=True, mode="agent", agent_api_key="real-key"),
         AgentConfig(require_citations=True, require_opened_citation_support=True),
@@ -232,7 +248,7 @@ async def test_agent_external_strategy_skips_factual_answer_evidence_gates() -> 
         search_provider=object(),
         page_fetcher=object(),
         model_client=_FakeModelClient(),
-        runner_factory=_NoCitationRunner,
+        runner_factory=_ValidStrategyRunner,
     )
 
     result = await broker.ask_many(
@@ -241,13 +257,104 @@ async def test_agent_external_strategy_skips_factual_answer_evidence_gates() -> 
     )
 
     assert result[0]["ok"] is True
-    config = _NoCitationRunner.configurations[-1]
+    assert result[0]["strategy_attempts"] == 1
+    config = _ValidStrategyRunner.configurations[-1]
     assert config["agent"].require_citations is False
     assert config["agent"].require_opened_citation_support is False
     assert config["agent"].min_search_calls_before_final == 0
     assert config["agent"].max_steps == 4
     assert "retrieval-strategy controller" in config["kwargs"]["system_prompt"]
     assert config["kwargs"]["initial_force_final"] is True
+
+
+def test_agent_external_strategy_quality_rejects_generic_clue_paraphrases() -> None:
+    generic = (
+        '{"hypotheses":["The urban planner","The first stop"],'
+        '"queries":["urban planner boulevard interview",'
+        '"students tour city first stop","nine questions Tuesday interview"],'
+        '"source_classes":["interview","itinerary"],'
+        '"discriminators":["time","place"]}'
+    )
+    specific = (
+        '{"hypotheses":["Jan Gehl","Boulevard Anspach"],'
+        '"queries":["Jan Gehl pedestrian archive","Boulevard Anspach planning history",'
+        '"Brussels student itinerary PDF"],'
+        '"source_classes":["municipal archive","university itinerary"],'
+        '"discriminators":["project identity","tour schedule"]}'
+    )
+
+    assert AgentExternalModelBroker._strategy_quality_error(generic) is not None
+    assert AgentExternalModelBroker._strategy_quality_error(specific) is None
+
+
+def test_agent_external_strategy_rejects_named_hypotheses_not_used_in_queries() -> None:
+    disconnected = (
+        '{"hypotheses":["Ada Lovelace","Charles Babbage"],'
+        '"queries":["historical computing archive","analytical engine notes",'
+        '"museum catalog provenance"],'
+        '"source_classes":["archival correspondence","museum catalog"],'
+        '"discriminators":["authorship date","artifact provenance"]}'
+    )
+
+    assert AgentExternalModelBroker._strategy_quality_error(disconnected) == (
+        "queries did not explicitly test two distinct named hypotheses"
+    )
+
+
+def test_agent_external_strategy_rejects_capitalized_task_paraphrases() -> None:
+    source = "Find an urban planner interviewed on a Tuesday and a student tour first stop."
+    paraphrases = (
+        '{"hypotheses":["The Urban Planner","The Tuesday Interviewee",'
+        '"The Student Tour Participant"],'
+        '"queries":["Urban Planner archive","Tuesday Interviewee profile",'
+        '"Student Tour Participant itinerary"],'
+        '"source_classes":["archive","itinerary"],'
+        '"discriminators":["interview date","tour time"]}'
+    )
+
+    error = AgentExternalModelBroker._strategy_quality_error(
+        paraphrases,
+        source_text=source,
+    )
+    assert error is not None
+    assert "concrete candidate hypotheses" in error
+
+
+def test_agent_external_strategy_quality_is_not_tied_to_one_question_domain() -> None:
+    strategy = (
+        '{"hypotheses":["Ada Lovelace","Charles Babbage"],'
+        '"queries":["Ada Lovelace archive correspondence",'
+        '"Charles Babbage analytical engine notes","Science Museum engine provenance"],'
+        '"source_classes":["archival correspondence","museum catalog"],'
+        '"discriminators":["authorship date","artifact provenance"]}'
+    )
+
+    assert AgentExternalModelBroker._strategy_quality_error(strategy) is None
+
+
+def test_agent_external_repairs_combined_hypotheses_into_candidate_queries() -> None:
+    combined = (
+        '{"hypotheses":["Possibilities include \'Ada Lovelace\', \'Charles Babbage\', '
+        "and 'Analytical Engine'." + '"],'
+        '"queries":["historical computing clues","engine history"],'
+        '"source_classes":["archival correspondence","museum catalog"],'
+        '"discriminators":["authorship date","artifact provenance"]}'
+    )
+
+    repaired = AgentExternalModelBroker._repair_strategy_payload(combined)
+
+    assert repaired is not None
+    assert repaired["hypotheses"][:2] == ["Ada Lovelace", "Charles Babbage"]
+    assert len(repaired["queries"]) >= 3
+    assert all('"' in query for query in repaired["queries"])
+    assert AgentExternalModelBroker._strategy_quality_error(canonical_json(repaired)) is None
+
+
+def test_agent_external_strategy_usage_sums_all_retry_attempts() -> None:
+    assert AgentExternalModelBroker._sum_usage(
+        {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+        {"prompt_tokens": 20, "completion_tokens": 3, "total_tokens": 23},
+    ) == {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35}
 
 
 @pytest.mark.asyncio

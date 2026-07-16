@@ -287,4 +287,5 @@ def test_external_tool_schema_exposes_no_provider_or_generation_overrides() -> N
     assert parameters["required"] == ["requests"]
     assert set(parameters["properties"]) == {"requests"}
     request_properties = parameters["properties"]["requests"]["items"]["properties"]
-    assert set(request_properties) == {"query", "context", "system"}
+    assert set(request_properties) == {"query", "context", "system", "task_mode"}
+    assert request_properties["task_mode"]["enum"] == ["research", "strategy"]

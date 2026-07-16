@@ -177,13 +177,22 @@ def test_route_only_compiler_researches_early_then_opens_helper_sources() -> Non
 
     helper = next(step for step in steps if step["id"] == "independent_research_helper")
     assert helper["minimum_batch_size"] == 4
+    assert helper["maximum_batch_size"] == 4
+    assert helper["required_request_task_mode"] == "research"
+    assert len(helper["required_request_tags"]) == 4
     helper_index = steps.index(helper)
     helper_open = next(step for step in steps if step["id"] == "helper_source_inspection")
+    strategy = next(step for step in steps if step["id"] == "answer_blind_query_strategy")
+    strategy_search = next(step for step in steps if step["id"] == "strategy_query_execution")
     candidate_search = next(step for step in steps if step["id"] == "candidate_gap_search")
     candidate_open = next(
         step for step in steps if step["id"] == "candidate_gap_source_inspection"
     )
-    assert helper_index == 2
+    assert strategy["required_request_task_mode"] == "strategy"
+    assert strategy["maximum_batch_size"] == 1
+    assert strategy_search["minimum_batch_size"] == 3
+    assert steps.index(strategy) == 2
+    assert steps.index(strategy) < steps.index(strategy_search) < helper_index
     assert helper_index < steps.index(helper_open) < steps.index(candidate_search)
     assert steps.index(candidate_search) < steps.index(candidate_open)
     assert all(not step["id"].startswith("guide_search_rung_") for step in steps)
@@ -192,6 +201,26 @@ def test_route_only_compiler_researches_early_then_opens_helper_sources() -> Non
     assert '"seed_queries"' not in discovery
     review = next(step for step in steps if step["id"] == "pre_final_adversarial_review")
     assert review["minimum_batch_size"] == 2
+
+
+def test_retry_feedback_names_only_incorrect_prior_candidates() -> None:
+    route, full = _records(sources=False)
+    steps, review = compile_guided_steps(
+        route,
+        full,
+        attempt=2,
+        rejected_candidates=["Wrong Person", "Secret Person", "Wrong Person"],
+    )
+
+    discovery = next(step for step in steps if step["id"] == "discovery_plan")
+    assert "Wrong Person" in discovery["instruction"]
+    assert "Secret Person" not in discovery["instruction"]
+    assert controller_label_leaks(
+        question="Who was documented in 1901?",
+        oracle_record=full,
+        steps=steps,
+        review_guidance=review,
+    ) == []
 
 
 def test_terminal_clock_request_overrides_incidental_geography_words() -> None:

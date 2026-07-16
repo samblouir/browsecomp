@@ -553,12 +553,16 @@ async def run_attempt(
     timeout_seconds: float,
     grader: Grader | None,
     grader_semaphore: asyncio.Semaphore,
+    rejected_candidates: list[str] | None = None,
 ) -> dict[str, Any]:
     item = oracle_record["item"]
     question = str(item["question_text"])
     reference = str(oracle_record["oracle"]["gold_answer"])
     scripted_steps, review_guidance = compile_guided_steps(
-        route_record, oracle_record, attempt=attempt
+        route_record,
+        oracle_record,
+        attempt=attempt,
+        rejected_candidates=rejected_candidates,
     )
     leaks = controller_label_leaks(
         question=question,
@@ -914,6 +918,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 timeout_seconds=args.item_timeout_seconds,
                 grader=grader,
                 grader_semaphore=grader_semaphore,
+                rejected_candidates=attempted_candidates,
             )
         except Exception as exc:  # noqa: BLE001 - isolate one item from the full batch
             result = {

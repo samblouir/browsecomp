@@ -20,6 +20,15 @@ def tool_schemas(*, include_external_model: bool = True) -> list[dict[str, Any]]
         }
 
     external_request_properties = {
+        "task_mode": {
+            "type": "string",
+            "enum": ["research", "strategy"],
+            "default": "research",
+            "description": (
+                "Use strategy for an answer-blind retrieval plan that returns queries without "
+                "browsing; use research for an evidence-gathering agent."
+            ),
+        },
         "query": {
             "type": "string",
             "minLength": 1,

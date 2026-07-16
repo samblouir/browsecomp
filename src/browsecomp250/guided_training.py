@@ -141,6 +141,7 @@ def compile_guided_steps(
     oracle_record: dict[str, Any],
     *,
     attempt: int = 1,
+    rejected_candidates: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Compile one private guide into answer-redacted, one-action Star turns."""
     constraints = route_record.get("constraints") or []
@@ -163,6 +164,23 @@ def compile_guided_steps(
         route_question_model=question_model,
         route_queries=route_query_rungs,
     )
+    safe_rejected_candidates: list[str] = []
+    for value in rejected_candidates or []:
+        candidate = " ".join(str(value).split()).strip()
+        if not candidate:
+            continue
+        redacted = redact_oracle_text(candidate, oracle_record)
+        if _CANDIDATE_PLACEHOLDER in redacted:
+            continue
+        safe_rejected_candidates.append(redacted[:500])
+    safe_rejected_candidates = list(dict.fromkeys(safe_rejected_candidates))[-12:]
+    rejected_candidate_guidance = ""
+    if safe_rejected_candidates:
+        rejected_candidate_guidance = (
+            " The privately_rejected_prior_outputs below failed private grading in earlier "
+            "independent attempts: do not repeat them, but do not infer the unknown answer from "
+            "their rejection."
+        )
     steps: list[dict[str, Any]] = [
         {
             "id": "constraint_audit",
@@ -196,7 +214,9 @@ def compile_guided_steps(
             "instruction": (
                 "Create and save one compact discovery plan with distinct rare-anchor, "
                 "structured-source, and alternate-candidate branches. Do not execute a search or "
-                "finalize on this turn.\n"
+                "finalize on this turn."
+                + rejected_candidate_guidance
+                + "\n"
                 + canonical_json(
                     {
                         "topology": question_model.get("topology"),
@@ -204,6 +224,7 @@ def compile_guided_steps(
                         "source_targets": discovery_profile["source_targets"],
                         "source_native_terms": discovery_profile["source_native_terms"],
                         "metadata_policy": discovery_profile["route_metadata_role"],
+                        "privately_rejected_prior_outputs": safe_rejected_candidates,
                         "workers": [
                             {
                                 "role": "rare_anchor_researcher",
@@ -338,6 +359,49 @@ def compile_guided_steps(
             }
         )
 
+    if not sources:
+        steps.extend(
+            [
+                {
+                    "id": "answer_blind_query_strategy",
+                    "plan_step_ids": ["S002", "S003", "S004", "S005", "S006"],
+                    "instruction": (
+                        "Call ask_external_model with exactly one request whose task_mode is "
+                        "strategy. Give it the complete original question, the constraint ledger, "
+                        "and the discovery plan. Ask for exactly one JSON object with keys "
+                        "hypotheses, queries, source_classes, and discriminators. It must propose "
+                        "2-5 named hypotheses as separate array elements and 3-7 short, source-native public-"
+                        "web queries that test different relation edges. Queries must not repeat the "
+                        "full clue bundle; at least two must explicitly test named hypotheses, and at "
+                        "least one must invert the relation from the requested "
+                        "terminal fact. This is answer-blind planning: do not ask for a benchmark "
+                        "answer, label, dump, canary, or hidden reference. Do not browse or finalize "
+                        "on this parent turn."
+                    ),
+                    "allowed_actions": ["ask_external_model"],
+                    "minimum_batch_size": 1,
+                    "maximum_batch_size": 1,
+                    "required_request_task_mode": "strategy",
+                    "advance_on_attempt": True,
+                },
+                {
+                    "id": "strategy_query_execution",
+                    "plan_step_ids": ["S004", "S005", "S006"],
+                    "instruction": (
+                        "Read the answer-blind strategy JSON and execute one search_many call with "
+                        "its 3-7 strongest distinct queries. Preserve named hypotheses, source-native "
+                        "vocabulary, relation direction, and the terminal-fact inversion. If the "
+                        "strategy response is malformed, synthesize 3-7 replacements from the same "
+                        "general criteria. Do not paste the whole question into a query, repeat prior "
+                        "queries, search for benchmark answers, or finalize."
+                    ),
+                    "allowed_actions": ["search_many"],
+                    "minimum_batch_size": 3,
+                    "advance_on_attempt": True,
+                },
+            ]
+        )
+
     steps.append(
         {
             "id": "independent_research_helper",
@@ -351,10 +415,23 @@ def compile_guided_steps(
                 "propose one specific candidate, preserve the exact clue relations, report unresolved "
                 "gaps, and return public citation URLs. Generation settings and routing are supplied "
                 "by the deployment; do not request or name a provider or model. Do not finalize on "
-                "this turn."
+                "this turn. Start each request query with exactly one of these role tags and follow "
+                "its assignment: [role:rare_anchor_solver] searches rare source-native wording and "
+                "named entities; [role:relation_graph_inverter] starts from the requested terminal "
+                "fact and traverses backward; [role:alternate_candidate_falsifier] tests named leads "
+                "and generates a genuinely different candidate; [role:evidence_canonical_auditor] "
+                "finds primary evidence and checks answer form."
             ),
             "allowed_actions": ["ask_external_model"],
             "minimum_batch_size": 4,
+            "maximum_batch_size": 4,
+            "required_request_task_mode": "research",
+            "required_request_tags": [
+                "[role:rare_anchor_solver]",
+                "[role:relation_graph_inverter]",
+                "[role:alternate_candidate_falsifier]",
+                "[role:evidence_canonical_auditor]",
+            ],
             "advance_on_attempt": True,
         }
     )
@@ -546,10 +623,17 @@ def compile_guided_steps(
                     "alternative, identity collision, and canonical-answer-form error. They must "
                     "return only material blockers and concrete repair searches; minor missing "
                     "redundant corroboration is not a blocker when the requested answer is directly "
-                    "supported. Do not finalize on this turn."
+                    "supported. Prefix the first request with [role:constraint_auditor] and the "
+                    "second with [role:alternate_falsifier]. Do not finalize on this turn."
                 ),
                 "allowed_actions": ["ask_external_model"],
                 "minimum_batch_size": 2,
+                "maximum_batch_size": 2,
+                "required_request_task_mode": "research",
+                "required_request_tags": [
+                    "[role:constraint_auditor]",
+                    "[role:alternate_falsifier]",
+                ],
                 "advance_on_attempt": True,
             },
             {

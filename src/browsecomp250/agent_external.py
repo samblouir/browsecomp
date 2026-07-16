@@ -16,13 +16,87 @@ from .util import canonical_json
 
 _FINAL_ACTION_CONTRACT = re.compile(r'\{[^{}]*["\']action["\']\s*:\s*["\']final["\']', re.I)
 _REQUIRED_HELPER_MODEL = "frontierrl/star-2"
+_STRATEGY_GENERIC_ENTITY_WORDS = {
+    "a",
+    "an",
+    "actor",
+    "actress",
+    "answer",
+    "artist",
+    "author",
+    "book",
+    "boulevard",
+    "candidate",
+    "city",
+    "company",
+    "country",
+    "event",
+    "european",
+    "film",
+    "first",
+    "guide",
+    "institution",
+    "interview",
+    "interviewee",
+    "location",
+    "organization",
+    "paper",
+    "participant",
+    "person",
+    "place",
+    "planner",
+    "project",
+    "publication",
+    "question",
+    "road",
+    "researcher",
+    "scientist",
+    "second",
+    "song",
+    "start",
+    "stop",
+    "street",
+    "student",
+    "students",
+    "subject",
+    "the",
+    "this",
+    "time",
+    "tour",
+    "tuesday",
+    "university",
+    "urban",
+    "website",
+}
+_STRATEGY_QUERY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "with",
+}
 _STRATEGY_SYSTEM_PROMPT = """
 You are a retrieval-strategy controller. The supplied task asks for a query plan, not a factual
 answer. Read the supplied question, evidence, and prior queries, then return exactly one native
 final tool call immediately without browsing. Put the requested JSON object verbatim in final.explanation, set
 final.exact_answer to "query strategy", confidence to a calibrated number, and citations to an
-empty list. Never search for benchmark dumps, canaries,
-leaked questions, or reference answers.
+empty list. Never search for benchmark dumps, canaries, leaked questions, or reference answers.
+A hypothesis must name a concrete person, place, project, institution, publication, or source
+collection using proper nouns; a paraphrase such as "the urban planner" is not a hypothesis. Put
+two to five alternatives in separate hypotheses array elements, with one candidate identity per
+element. At least two queries must test named hypotheses and use different entity-relation routes
+instead of repeating the clue bundle. A retry must directly repair the stated rejection reason.
+Capitalizing role nouns copied from the task does not create a named hypothesis: introduce concrete
+proper names that add retrieval information not already present in the supplied task.
 """.strip()
 
 
@@ -146,6 +220,9 @@ class AgentExternalModelBroker:
                 call_index=call_index,
             )
         strategy_mode = task_mode == "strategy"
+        strategy_source_text = str(
+            request.get("_strategy_source_text") or f"{query}\n{context}"
+        )
         helper_agent_config = self.agent_config
         if strategy_mode:
             helper_agent_config = self.agent_config.model_copy(
@@ -211,7 +288,9 @@ class AgentExternalModelBroker:
         if context:
             question_parts.append(f"Supplied context:\n{context}")
         question = "\n\n".join(question_parts)
-        namespace = f"{request_namespace}:star2-agent:{call_index}"
+        strategy_retry = int(request.get("_strategy_retry") or 0)
+        retry_suffix = f":strategy-retry-{strategy_retry}" if strategy_retry else ""
+        namespace = f"{request_namespace}:star2-agent:{call_index}{retry_suffix}"
         events: list[dict[str, Any]] = []
 
         def event_sink(event: dict[str, Any]) -> None:
@@ -276,13 +355,282 @@ class AgentExternalModelBroker:
                         f"[bc250-helper] namespace={namespace} cleanup_error={type(exc).__name__}: {exc}",
                         flush=True,
                     )
-        return self._result_from_outcome(
+        result = self._result_from_outcome(
             request,
             outcome,
             namespace=namespace,
             events=events,
             require_citations=helper_agent_config.require_citations,
         )
+        if not strategy_mode:
+            return result
+        strategy_error = self._strategy_quality_error(
+            str(result.get("content") or ""),
+            source_text=strategy_source_text,
+        )
+        if not strategy_error:
+            result["strategy_attempts"] = strategy_retry + 1
+            return result
+        if strategy_retry < 2:
+            retry_request = dict(request)
+            retry_request["_strategy_retry"] = strategy_retry + 1
+            retry_request["_strategy_source_text"] = strategy_source_text
+            retry_request["query"] = (
+                query
+                + "\n\nThe previous strategy was rejected by the answer-blind quality gate: "
+                + strategy_error
+                + ". Return a materially different JSON plan. Name concrete proper-noun "
+                "hypotheses from distinct domains or geographies, then write short queries around "
+                "those names, source-native terminology, and different relation edges. Do not copy "
+                "the clue sentences. Rejected response:\n"
+                + str(result.get("content") or "")[:6_000]
+            )
+            retry_result = await self._ask_one(
+                retry_request,
+                request_namespace=request_namespace,
+                call_index=call_index,
+            )
+            retry_result["usage"] = self._sum_usage(
+                result.get("usage"), retry_result.get("usage")
+            )
+            retry_result["strategy_rejections"] = [
+                {
+                    "attempt": strategy_retry + 1,
+                    "request_id": result.get("request_id"),
+                    "reason": strategy_error,
+                },
+                *list(retry_result.get("strategy_rejections") or []),
+            ]
+            return retry_result
+        repaired = self._repair_strategy_payload(
+            str(result.get("content") or ""),
+            source_text=strategy_source_text,
+        )
+        if repaired is not None:
+            result.update(
+                {
+                    "ok": True,
+                    "status": "succeeded",
+                    "content": canonical_json(repaired),
+                    "error": None,
+                    "strategy_attempts": strategy_retry + 1,
+                    "strategy_repaired": True,
+                    "strategy_gate_warning": strategy_error,
+                }
+            )
+            return result
+        result.update(
+            {
+                "ok": False,
+                "status": "failed",
+                "error": (
+                    "Answer-blind strategy quality gate rejected all attempts: " + strategy_error
+                ),
+                "strategy_attempts": strategy_retry + 1,
+            }
+        )
+        return result
+
+    @staticmethod
+    def _sum_usage(*values: Any) -> dict[str, int]:
+        totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            for key in totals:
+                try:
+                    totals[key] += max(0, int(value.get(key) or 0))
+                except (TypeError, ValueError):
+                    continue
+        totals["total_tokens"] = totals["prompt_tokens"] + totals["completion_tokens"]
+        return totals
+
+    @staticmethod
+    def _strategy_json_object(text: str) -> dict[str, Any] | None:
+        decoder = json.JSONDecoder()
+        for index, character in enumerate(text):
+            if character != "{":
+                continue
+            try:
+                value, _ = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict) and isinstance(value.get("queries"), list):
+                return value
+        return None
+
+    @classmethod
+    def _strategy_candidate_names(cls, payload: dict[str, Any]) -> list[str]:
+        hypotheses = [
+            " ".join(str(value).split()).strip()
+            for value in payload.get("hypotheses") or []
+            if str(value).strip()
+        ]
+        candidates: list[str] = []
+        for hypothesis in hypotheses:
+            quoted = re.findall(r"['\"]([^'\"]{2,100})['\"]", hypothesis)
+            candidate_values = quoted or ([hypothesis] if len(hypothesis.split()) <= 10 else [])
+            for candidate in candidate_values:
+                candidate = candidate.strip(" .,:;()[]{}")
+                words = re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9'’-]+", candidate)
+                if not words or len(words) > 10:
+                    continue
+                if all(word.casefold() in _STRATEGY_GENERIC_ENTITY_WORDS for word in words):
+                    continue
+                if not any(word[:1].isupper() for word in words if word):
+                    continue
+                if sum(character.isdigit() for character in candidate) > len(candidate) / 3:
+                    continue
+                candidates.append(candidate)
+        return list(dict.fromkeys(candidates))[:5]
+
+    @classmethod
+    def _repair_strategy_payload(
+        cls,
+        text: str,
+        *,
+        source_text: str = "",
+    ) -> dict[str, Any] | None:
+        payload = cls._strategy_json_object(text)
+        if payload is None:
+            return None
+        candidates = cls._strategy_candidate_names(payload)
+        if len(candidates) < 2:
+            return None
+        source_classes = [
+            " ".join(str(value).split()).strip()
+            for value in payload.get("source_classes") or []
+            if str(value).strip()
+        ]
+        discriminators = [
+            " ".join(str(value).split()).strip()
+            for value in payload.get("discriminators") or []
+            if str(value).strip()
+        ]
+        anchors = list(dict.fromkeys(source_classes + discriminators))
+        if len(source_classes) < 2 or len(discriminators) < 2 or not anchors:
+            return None
+        queries: list[str] = []
+        for index, candidate in enumerate(candidates):
+            anchor = anchors[index % len(anchors)]
+            query = f'"{candidate}" {anchor}'
+            if len(re.findall(r"\w+", query)) <= 14:
+                queries.append(query)
+        anchor_index = len(queries)
+        while len(queries) < 3 and anchor_index < len(anchors) + len(candidates) * 2:
+            candidate = candidates[anchor_index % len(candidates)]
+            anchor = anchors[anchor_index % len(anchors)]
+            query = f'"{candidate}" {anchor}'
+            if query not in queries and len(re.findall(r"\w+", query)) <= 14:
+                queries.append(query)
+            anchor_index += 1
+        repaired = {
+            "hypotheses": candidates,
+            "queries": queries[:7],
+            "source_classes": list(dict.fromkeys(source_classes))[:7],
+            "discriminators": list(dict.fromkeys(discriminators))[:7],
+        }
+        return (
+            repaired
+            if cls._strategy_quality_error(
+                canonical_json(repaired),
+                source_text=source_text,
+            )
+            is None
+            else None
+        )
+
+    @classmethod
+    def _strategy_quality_error(cls, text: str, *, source_text: str = "") -> str | None:
+        payload = cls._strategy_json_object(text)
+        if payload is None:
+            return "missing a parseable JSON object with a queries array"
+        queries = [
+            " ".join(str(value).split())
+            for value in payload.get("queries") or []
+            if str(value).strip()
+        ]
+        source_classes = [
+            str(value).strip()
+            for value in payload.get("source_classes") or []
+            if str(value).strip()
+        ]
+        discriminators = [
+            str(value).strip()
+            for value in payload.get("discriminators") or []
+            if str(value).strip()
+        ]
+        candidate_names = cls._strategy_candidate_names(payload)
+        if len(candidate_names) < 2:
+            return "fewer than two concrete candidate hypotheses"
+        source_terms = {
+            value.casefold()
+            for value in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", source_text)
+        }
+        novel_candidates = 0
+        for candidate in candidate_names:
+            candidate_terms = {
+                value.casefold()
+                for value in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", candidate)
+                if value.casefold() not in _STRATEGY_GENERIC_ENTITY_WORDS
+            }
+            if candidate_terms - source_terms:
+                novel_candidates += 1
+        if source_terms and novel_candidates < 2:
+            return "fewer than two hypotheses introduced concrete entity terms beyond the task clues"
+        named_tokens: set[str] = set()
+        for candidate in candidate_names:
+            for token in re.findall(r"\b[A-Z][A-Za-zÀ-ÖØ-öø-ÿ'’-]{2,}\b", candidate):
+                normalized = token.casefold()
+                if normalized not in _STRATEGY_GENERIC_ENTITY_WORDS:
+                    named_tokens.add(normalized)
+        if not named_tokens:
+            return "hypotheses paraphrased the clues instead of naming a concrete proper noun"
+        if not 3 <= len(queries) <= 7:
+            return "queries must contain between three and seven entries"
+        normalized_queries = {" ".join(value.casefold().split()) for value in queries}
+        if len(normalized_queries) != len(queries):
+            return "queries contained duplicates"
+        if any(len(re.findall(r"\w+", query)) > 14 for query in queries):
+            return "a query exceeded fourteen words"
+        candidate_term_sets = []
+        for candidate in candidate_names:
+            terms = {
+                value.casefold()
+                for value in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ]+", candidate)
+                if value.casefold() not in _STRATEGY_GENERIC_ENTITY_WORDS
+            }
+            if terms:
+                candidate_term_sets.append(terms)
+        query_term_sets: list[set[str]] = []
+        matched_candidates: set[int] = set()
+        for query in queries:
+            terms = {
+                value.casefold()
+                for value in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ0-9]+", query)
+                if value.casefold() not in _STRATEGY_QUERY_STOPWORDS
+            }
+            query_term_sets.append(terms)
+            for candidate_index, candidate_terms in enumerate(candidate_term_sets):
+                required_matches = 1 if len(candidate_terms) <= 2 else 2
+                if len(terms & candidate_terms) >= required_matches:
+                    matched_candidates.add(candidate_index)
+        if len(matched_candidates) < 2:
+            return "queries did not explicitly test two distinct named hypotheses"
+        low_overlap_pairs = 0
+        for left_index, left in enumerate(query_term_sets):
+            for right in query_term_sets[left_index + 1 :]:
+                union = left | right
+                overlap = len(left & right) / len(union) if union else 1.0
+                if overlap <= 0.5:
+                    low_overlap_pairs += 1
+        if low_overlap_pairs < 2:
+            return "queries did not test sufficiently distinct entity-relation routes"
+        if len({value.casefold() for value in source_classes}) < 2:
+            return "fewer than two source classes"
+        if len({value.casefold() for value in discriminators}) < 2:
+            return "fewer than two candidate discriminators"
+        return None
 
     async def _ask_direct_review(
         self,
