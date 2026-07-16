@@ -136,6 +136,62 @@ class FinalCaptureModel:
         return None
 
 
+class SurfaceConstraintModel:
+    def __init__(self):
+        self.calls = []
+        self.responses = iter(
+            [
+                ModelResponse(
+                    content="",
+                    raw_message={
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-invalid-surface",
+                                "type": "function",
+                                "function": {
+                                    "name": "final",
+                                    "arguments": (
+                                        '{"explanation":"nearby concept",'
+                                        '"exact_answer":"A Study of an Intervention Program",'
+                                        '"confidence":95,"citations":["https://example.test/a"]}'
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                ),
+                ModelResponse(
+                    content="",
+                    raw_message={
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "call-valid-surface",
+                                "type": "function",
+                                "function": {
+                                    "name": "final",
+                                    "arguments": (
+                                        '{"explanation":"literal title match",'
+                                        '"exact_answer":"A Longitudinal Study and an Intervention",'
+                                        '"confidence":85,"citations":["https://example.test/b"]}'
+                                    ),
+                                },
+                            }
+                        ],
+                    },
+                ),
+            ]
+        )
+
+    async def chat(self, messages, **kwargs):
+        self.calls.append((deepcopy(messages), deepcopy(kwargs)))
+        return next(self.responses)
+
+    async def close(self):
+        return None
+
+
 class AutomaticExternalModel:
     def __init__(self):
         self.responses = iter(
@@ -1028,6 +1084,61 @@ def test_abstention_answers_are_detected(answer: str) -> None:
 
 def test_concrete_answers_are_not_abstentions() -> None:
     assert not AgentRunner._is_abstention_answer("Arbitrary Concrete Entity")
+
+
+def test_surface_answer_constraints_enforce_literal_edge_words() -> None:
+    ends_question = "The requested title ends with the word “Intervention”."
+    assert AgentRunner._surface_answer_constraint_errors(
+        ends_question,
+        "A Study of an Intervention Program",
+    ) == ["answer must end with 'Intervention', but its final word is 'Program'"]
+    assert not AgentRunner._surface_answer_constraint_errors(
+        ends_question,
+        "A Longitudinal Study and an Intervention",
+    )
+
+    starts_question = "The answer begins with the word Alpha."
+    assert AgentRunner._surface_answer_constraint_errors(
+        starts_question,
+        "Beta Alpha",
+    ) == ["answer must start with 'Alpha', but its first word is 'Beta'"]
+    assert not AgentRunner._surface_answer_constraint_errors(starts_question, "Alpha Beta")
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_final_that_violates_explicit_surface_constraint(
+    tmp_path: Path,
+) -> None:
+    model = SurfaceConstraintModel()
+    events: list[dict] = []
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="tools",
+        ),
+        AgentConfig(max_steps=2, require_citations=True),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=model,
+        event_sink=events.append,
+    )
+
+    outcome = await runner.run(
+        "Which paper has a title ending with the word “Intervention”?",
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "A Longitudinal Study and an Intervention"
+    second_messages, _ = model.calls[1]
+    correction = second_messages[-1]
+    assert correction["role"] == "tool"
+    assert correction["tool_call_id"] == "call-invalid-surface"
+    assert "explicit surface constraint" in correction["content"]
+    assert "final word is 'Program'" in correction["content"]
+    assert any(event["event"] == "surface_constraint_final_rejected" for event in events)
 
 
 @pytest.mark.asyncio

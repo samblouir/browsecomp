@@ -119,6 +119,24 @@ async def test_agent_external_broker_forces_star2_tools_and_runs_concurrently() 
     assert config["kwargs"]["external_model_config"].enabled is False
 
 
+def test_agent_external_broker_rejects_non_star2_helper() -> None:
+    with pytest.raises(ValueError, match="pinned to frontierrl/star-2"):
+        AgentExternalModelBroker(
+            ExternalModelConfig(
+                enabled=True,
+                mode="agent",
+                agent_api_key="real-key",
+                agent_model="gpt-5.6",
+            ),
+            AgentConfig(),
+            BrowserConfig(),
+            search_provider=object(),
+            page_fetcher=object(),
+            model_client=_FakeModelClient(),
+            runner_factory=_FakeRunner,
+        )
+
+
 @pytest.mark.asyncio
 async def test_agent_external_broker_normalizes_final_action_contract() -> None:
     broker = AgentExternalModelBroker(

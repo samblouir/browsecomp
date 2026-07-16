@@ -13,6 +13,7 @@ from .types import AgentOutcome
 from .util import canonical_json
 
 _FINAL_ACTION_CONTRACT = re.compile(r'\{[^{}]*["\']action["\']\s*:\s*["\']final["\']', re.I)
+_REQUIRED_HELPER_MODEL = "frontierrl/star-2"
 
 
 class AgentExternalModelBroker:
@@ -29,6 +30,11 @@ class AgentExternalModelBroker:
         model_client: OpenAICompatibleClient | None = None,
         runner_factory: Callable[..., AgentRunner] = AgentRunner,
     ) -> None:
+        if config.agent_model != _REQUIRED_HELPER_MODEL:
+            raise ValueError(
+                "Agent external help is pinned to "
+                f"{_REQUIRED_HELPER_MODEL}; got {config.agent_model!r}"
+            )
         self.config = config
         self.browser_config = browser_config
         self.search = search_provider

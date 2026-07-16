@@ -109,6 +109,17 @@ _ABSTENTION_ANSWER = re.compile(
     r")(?:\b.*)?$",
     flags=re.I,
 )
+_ENDS_WITH_WORD = re.compile(
+    r"\b(?:ends?|ending)\s+with\s+the\s+word\s+[\"'“”‘’]*\s*"
+    r"(?P<word>[a-z0-9][a-z0-9'’-]*)",
+    flags=re.I,
+)
+_STARTS_WITH_WORD = re.compile(
+    r"\b(?:starts?|begins?|starting|beginning)\s+with\s+the\s+word\s+[\"'“”‘’]*\s*"
+    r"(?P<word>[a-z0-9][a-z0-9'’-]*)",
+    flags=re.I,
+)
+_ANSWER_WORD = re.compile(r"[a-z0-9]+(?:['’-][a-z0-9]+)*", flags=re.I)
 
 
 class AgentRunner:
@@ -174,6 +185,7 @@ class AgentRunner:
         consecutive_duplicate_actions = 0
         last_successful_search_result: dict[str, Any] | None = None
         search_query_history: list[str] = []
+        pending_surface_constraint_correction: str | None = None
         chain_enabled = self.model_config.response_chain
         previous_response_id: str | None = None
         chain_delta_messages: list[dict[str, Any]] | None = None
@@ -543,6 +555,46 @@ class AgentRunner:
                 continue
 
             if action.action == "final":
+                surface_errors = self._surface_answer_constraint_errors(
+                    question,
+                    str(action.payload.get("exact_answer") or ""),
+                )
+                if surface_errors:
+                    correction = (
+                        "Final answer violates an explicit surface constraint in the question: "
+                        + "; ".join(surface_errors)
+                        + ". Continue research and return a candidate that literally satisfies the "
+                        "stated answer form. Do not reinterpret starts/ends-with wording."
+                    )
+                    errors.append(correction)
+                    raw_tool_calls = assistant_message.get("tool_calls")
+                    if (
+                        protocol in {"tools", "auto"}
+                        and isinstance(raw_tool_calls, list)
+                        and raw_tool_calls
+                    ):
+                        messages.append(assistant_message)
+                        rejected_tool_call = raw_tool_calls[0]
+                        correction_message = {
+                            "role": "tool",
+                            "tool_call_id": rejected_tool_call.get("id", f"call-{step}"),
+                            "name": str(
+                                (rejected_tool_call.get("function") or {}).get("name") or "final"
+                            ),
+                            "content": canonical_json({"ok": False, "error": correction}),
+                        }
+                    else:
+                        messages.append({"role": "assistant", "content": response.content})
+                        correction_message = {"role": "user", "content": correction}
+                    messages.append(correction_message)
+                    transcript.append(correction_message)
+                    chain_delta_messages = [correction_message]
+                    self._emit(
+                        "surface_constraint_final_rejected",
+                        step=step,
+                        violations=surface_errors,
+                    )
+                    continue
                 outcome = self._final_outcome(
                     action,
                     started=started,
@@ -654,6 +706,32 @@ class AgentRunner:
                         },
                     }
                 )
+                if rescue_action is not None:
+                    surface_errors = self._surface_answer_constraint_errors(
+                        question,
+                        str(rescue_action.payload.get("exact_answer") or ""),
+                    )
+                    if surface_errors:
+                        pending_surface_constraint_correction = (
+                            "The independent finalizer proposed an answer that violates an explicit "
+                            "surface constraint: "
+                            + "; ".join(surface_errors)
+                            + ". Do not accept or rationalize that candidate."
+                        )
+                        errors.append(pending_surface_constraint_correction)
+                        rescue_result = {
+                            **rescue_result,
+                            "ok": False,
+                            "error": pending_surface_constraint_correction,
+                            "surface_constraint_violations": surface_errors,
+                        }
+                        rescue_action = None
+                        self._emit(
+                            "automatic_finalization_rescue_rejected",
+                            step=step,
+                            violations=surface_errors,
+                            result=rescue_result,
+                        )
                 if rescue_action is not None:
                     outcome = self._final_outcome(
                         rescue_action,
@@ -1197,6 +1275,13 @@ class AgentRunner:
             elif action.action in {"open", "open_many"} and result.get("ok"):
                 require_open = False
                 search_streak = 0
+
+            if pending_surface_constraint_correction is not None:
+                result["surface_constraint_rejection"] = {
+                    "ok": False,
+                    "error": pending_surface_constraint_correction,
+                }
+                pending_surface_constraint_correction = None
 
             result_text = truncate_middle(json.dumps(result, ensure_ascii=False), 80_000)
             if protocol == "tools" and assistant_message.get("tool_calls"):
@@ -2207,6 +2292,26 @@ class AgentRunner:
         answer = str(action.payload.get("exact_answer") or "")
         if cls._is_abstention_answer(answer):
             raise ProtocolError("final requires one concrete answer; abstentions are invalid")
+
+    @staticmethod
+    def _surface_answer_constraint_errors(question: str, answer: str) -> list[str]:
+        answer_words = _ANSWER_WORD.findall(answer)
+        errors: list[str] = []
+        for match in _ENDS_WITH_WORD.finditer(question):
+            required = match.group("word")
+            actual = answer_words[-1] if answer_words else "<empty>"
+            if actual.casefold() != required.casefold():
+                errors.append(
+                    f"answer must end with {required!r}, but its final word is {actual!r}"
+                )
+        for match in _STARTS_WITH_WORD.finditer(question):
+            required = match.group("word")
+            actual = answer_words[0] if answer_words else "<empty>"
+            if actual.casefold() != required.casefold():
+                errors.append(
+                    f"answer must start with {required!r}, but its first word is {actual!r}"
+                )
+        return errors
 
     @classmethod
     def _concrete_review_actions(cls, reviews: list[dict[str, Any]]) -> list[AgentAction]:
