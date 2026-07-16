@@ -116,6 +116,7 @@ class SearchConfig(StrictConfigModel):
     provider: Literal[
         "bing_ssh",
         "brave",
+        "brave_ssh",
         "google_chrome",
         "hybrid",
         "openrouter_exa",
@@ -137,6 +138,13 @@ class SearchConfig(StrictConfigModel):
     cache_mode: Literal["off", "read", "write", "readwrite", "refresh"] = "readwrite"
     cache_path: Path = Path("~/.cache/browsecomp250/search-cache.sqlite3")
     brave_api_key: str = ""
+    brave_ssh_host: str = ""
+    brave_ssh_bin: str = "ssh"
+    brave_ssh_remote_curl_bin: str = "curl"
+    brave_ssh_connect_timeout_seconds: int = Field(default=8, ge=1, le=60)
+    brave_ssh_max_concurrency: int = Field(default=16, ge=1, le=64)
+    brave_ssh_min_interval_seconds: float = Field(default=0.1, ge=0, le=10)
+    brave_ssh_error_cooldown_seconds: float = Field(default=3.0, ge=0, le=60)
     openrouter_api_key: str = ""
     openrouter_api_base: str = "https://openrouter.ai/api/v1"
     openrouter_search_model: str = "openai/gpt-4.1-nano"
@@ -187,6 +195,7 @@ class SearchConfig(StrictConfigModel):
         return {
             "bing_ssh": "",
             "brave": self.brave_api_key,
+            "brave_ssh": "",
             "google_chrome": "",
             "hybrid": self.brave_api_key,
             "openrouter_exa": self.openrouter_api_key,

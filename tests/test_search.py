@@ -9,6 +9,7 @@ from browsecomp250.config import SearchConfig
 from browsecomp250.search.base import SearchError
 from browsecomp250.search.bing_ssh import BingSSHSearchProvider
 from browsecomp250.search.brave import BraveSearchProvider
+from browsecomp250.search.brave_ssh import BraveSSHSearchProvider
 from browsecomp250.search.google_chrome import GoogleChromeSearchProvider
 from browsecomp250.search.hybrid import HybridSearchProvider
 from browsecomp250.search.openrouter_exa import OpenRouterExaSearchProvider
@@ -621,6 +622,100 @@ def test_bing_ssh_parser_honors_result_count_and_offset() -> None:
         "https://example.test/1",
     ]
     assert [item.rank for item in results] == [7, 8]
+
+
+@pytest.mark.asyncio
+async def test_brave_ssh_adapter_uses_bounded_escaped_html_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = b"""\
+<html><head><title>Search</title></head><body>
+<div class="result-wrapper"><a href="https://example.test/result">
+  <div class="title search-snippet-title">Useful result</div></a>
+  <div class="generic-snippet"><div class="content">Direct evidence.</div></div>
+</div></body></html>
+"""
+    captured: tuple[object, ...] = ()
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return document, b""
+
+    async def create_subprocess_exec(*args: object, **kwargs: object) -> FakeProcess:
+        nonlocal captured
+        captured = args
+        assert kwargs["stdout"] == asyncio.subprocess.PIPE
+        assert kwargs["stderr"] == asyncio.subprocess.PIPE
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess_exec)
+    provider = BraveSSHSearchProvider(
+        SearchConfig(
+            provider="brave_ssh",
+            brave_ssh_host="remote.test",
+            brave_ssh_min_interval_seconds=0,
+            cache_mode="off",
+            cache_path=tmp_path / "cache.sqlite3",
+        )
+    )
+
+    results = await provider.search("exact <|channel|> phrase; touch /tmp/no", count=3)
+
+    assert results[0].url == "https://example.test/result"
+    assert results[0].title == "Useful result"
+    assert results[0].snippet == "Direct evidence."
+    assert results[0].source == "brave_ssh"
+    assert "remote.test" in captured
+    remote_command = str(captured[-1])
+    assert "<|channel|>" not in remote_command
+    assert "phrase%3B+touch+%2Ftmp%2Fno" in remote_command
+    assert "'Accept: text/html,application/xhtml+xml'" in remote_command
+    await provider.close()
+
+
+def test_brave_ssh_parser_rejects_challenge_and_query_mirrors() -> None:
+    with pytest.raises(SearchError, match="no organic result wrappers"):
+        BraveSSHSearchProvider._parse_html(
+            "<html><title>Verify you are human</title></html>",
+            query="useful evidence",
+            count=10,
+            offset=0,
+        )
+
+    document = """
+    <div class="result-wrapper"><a href="https://www.instagram.com/popular/produced-a-play-between-1970-and-1975-prosecuted-prison/">
+      <div class="title">Query mirror</div></a></div>
+    <div class="result-wrapper"><a href="https://example.test/history">
+      <div class="title">Independent history</div></a>
+      <div class="generic-snippet"><div class="content">Evidence.</div></div></div>
+    """
+    results = BraveSSHSearchProvider._parse_html(
+        document,
+        query="produced a play between 1970 and 1975 prosecuted prison",
+        count=10,
+        offset=0,
+    )
+    assert [item.url for item in results] == ["https://example.test/history"]
+
+
+def test_brave_ssh_parser_filters_social_query_pages_and_benchmark_poisoning() -> None:
+    document = """
+    <div class="result-wrapper"><a href="https://www.instagram.com/popular/nearby-clue-page/">
+      <div class="title">Nearby clue page</div></a></div>
+    <div class="result-wrapper"><a href="https://openreview.net/pdf/browsecomp-plus.pdf">
+      <div class="title">BrowseComp-Plus benchmark answers</div></a></div>
+    <div class="result-wrapper"><a href="https://example.test/source">
+      <div class="title">Independent source</div></a></div>
+    """
+    results = BraveSSHSearchProvider._parse_html(
+        document,
+        query="historical publication culinary innovations",
+        count=10,
+        offset=0,
+    )
+    assert [item.url for item in results] == ["https://example.test/source"]
 
 
 @pytest.mark.asyncio

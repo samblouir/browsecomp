@@ -28,6 +28,12 @@ BC250_BRAVE_API_KEY=...
 
 The adapter uses the Brave Web Search endpoint and `X-Subscription-Token`. Country, language, safe-search, count, and offset are passed from the common configuration.
 
+`brave_ssh` is a distinct, keyless stratum that parses Brave's server-rendered
+organic result page through an authorized SSH egress host. It uses bounded and
+paced `curl` commands, rejects challenge/empty pages, validates public URLs, and
+filters result URLs that merely mirror the query. It never launches the user's
+Chrome profile.
+
 ### Experimental Google in the user's Chrome
 
 ```dotenv

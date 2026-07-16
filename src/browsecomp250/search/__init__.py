@@ -6,6 +6,7 @@ from ..config import SearchConfig
 from .base import SearchProvider
 from .bing_ssh import BingSSHSearchProvider
 from .brave import BraveSearchProvider
+from .brave_ssh import BraveSSHSearchProvider
 from .google_chrome import GoogleChromeSearchProvider
 from .hybrid import HybridSearchProvider
 from .openrouter_exa import OpenRouterExaSearchProvider
@@ -23,6 +24,7 @@ def create_search_provider(
     providers = {
         "bing_ssh": BingSSHSearchProvider,
         "brave": BraveSearchProvider,
+        "brave_ssh": BraveSSHSearchProvider,
         "google_chrome": GoogleChromeSearchProvider,
         "hybrid": HybridSearchProvider,
         "openrouter_exa": OpenRouterExaSearchProvider,

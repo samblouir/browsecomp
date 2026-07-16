@@ -99,6 +99,16 @@ BC250_SEARCH_PROVIDER=brave
 BC250_BRAVE_API_KEY=replace-me
 ```
 
+If API quota is unavailable, the audited server-rendered Brave stratum can use
+an authorized SSH egress host without opening or automating a user's browser:
+
+```dotenv
+BC250_SEARCH_PROVIDER=brave_ssh
+BC250_BRAVE_SSH_HOST=sam-mba15
+```
+
+Keep `brave` and `brave_ssh` results as distinct reporting strata.
+
 ### Tavily
 
 ```dotenv

@@ -53,6 +53,13 @@ search:
   cache_mode: readwrite
   cache_path: ~/.cache/browsecomp250/search-cache.sqlite3
   brave_api_key: "${BC250_BRAVE_API_KEY:-}"
+  brave_ssh_host: "${BC250_BRAVE_SSH_HOST:-sam-mba15}"
+  brave_ssh_bin: "${BC250_BRAVE_SSH_BIN:-ssh}"
+  brave_ssh_remote_curl_bin: "${BC250_BRAVE_SSH_REMOTE_CURL_BIN:-curl}"
+  brave_ssh_connect_timeout_seconds: ${BC250_BRAVE_SSH_CONNECT_TIMEOUT_SECONDS:-8}
+  brave_ssh_max_concurrency: ${BC250_BRAVE_SSH_MAX_CONCURRENCY:-16}
+  brave_ssh_min_interval_seconds: ${BC250_BRAVE_SSH_MIN_INTERVAL_SECONDS:-0.1}
+  brave_ssh_error_cooldown_seconds: ${BC250_BRAVE_SSH_ERROR_COOLDOWN_SECONDS:-3.0}
   openrouter_api_key: "${BC250_OPENROUTER_API_KEY:-}"
   openrouter_api_base: "${BC250_OPENROUTER_API_BASE:-https://openrouter.ai/api/v1}"
   openrouter_search_model: "${BC250_OPENROUTER_SEARCH_MODEL:-openai/gpt-4.1-nano}"

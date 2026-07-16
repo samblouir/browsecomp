@@ -838,6 +838,7 @@
           "enum": [
             "bing_ssh",
             "brave",
+            "brave_ssh",
             "google_chrome",
             "hybrid",
             "openrouter_exa",
@@ -923,6 +924,49 @@
           "default": "",
           "title": "Brave Api Key",
           "type": "string"
+        },
+        "brave_ssh_host": {
+          "default": "",
+          "title": "Brave Ssh Host",
+          "type": "string"
+        },
+        "brave_ssh_bin": {
+          "default": "ssh",
+          "title": "Brave Ssh Bin",
+          "type": "string"
+        },
+        "brave_ssh_remote_curl_bin": {
+          "default": "curl",
+          "title": "Brave Ssh Remote Curl Bin",
+          "type": "string"
+        },
+        "brave_ssh_connect_timeout_seconds": {
+          "default": 8,
+          "maximum": 60,
+          "minimum": 1,
+          "title": "Brave Ssh Connect Timeout Seconds",
+          "type": "integer"
+        },
+        "brave_ssh_max_concurrency": {
+          "default": 16,
+          "maximum": 64,
+          "minimum": 1,
+          "title": "Brave Ssh Max Concurrency",
+          "type": "integer"
+        },
+        "brave_ssh_min_interval_seconds": {
+          "default": 0.1,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Brave Ssh Min Interval Seconds",
+          "type": "number"
+        },
+        "brave_ssh_error_cooldown_seconds": {
+          "default": 3.0,
+          "maximum": 60,
+          "minimum": 0,
+          "title": "Brave Ssh Error Cooldown Seconds",
+          "type": "number"
         },
         "openrouter_api_key": {
           "default": "",
