@@ -2232,7 +2232,7 @@ async def test_hard_budget_uses_one_external_finalization_rescue(tmp_path: Path)
     assert outcome.status == "completed"
     assert outcome.exact_answer == "Answer"
     assert outcome.confidence == 90
-    assert outcome.external_model_calls == 3
+    assert outcome.external_model_calls == 2
 
 
 @pytest.mark.asyncio
@@ -2267,7 +2267,7 @@ async def test_forced_final_nonfinal_action_uses_external_rescue(tmp_path: Path)
     assert outcome.status == "completed"
     assert outcome.exact_answer == "Answer"
     assert outcome.search_calls == 1
-    assert outcome.external_model_calls == 4
+    assert outcome.external_model_calls == 3
 
 
 @pytest.mark.asyncio

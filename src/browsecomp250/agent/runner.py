@@ -2464,6 +2464,25 @@ class AgentRunner:
             if review_requests
             else []
         )
+        review_actions = self._concrete_review_actions(reviews, question=question)
+        consensus_action = self._review_action_consensus(review_actions)
+        if consensus_action is not None:
+            return consensus_action, {
+                "ok": True,
+                "status": "succeeded",
+                "content": canonical_json(consensus_action.payload),
+                "attempted": review_count,
+                "review_request_ids": [item.get("request_id") for item in reviews],
+                "reviews": reviews,
+                "controller_consensus": True,
+                "consensus_count": sum(
+                    self._normalize_consensus_answer(str(action.payload.get("exact_answer") or ""))
+                    == self._normalize_consensus_answer(
+                        str(consensus_action.payload.get("exact_answer") or "")
+                    )
+                    for action in review_actions
+                ),
+            }
         adjudication_context = canonical_json(
             {
                 "evidence_bundle": truncate_middle(context, 130_000),
@@ -2813,6 +2832,56 @@ class AgentRunner:
                 ),
                 "exact_answer": str(chosen.payload.get("exact_answer") or "").strip(),
                 "confidence": min(max(confidence, 0.0), 70.0),
+                "citations": citations,
+            },
+        )
+
+    @classmethod
+    def _review_action_consensus(cls, actions: list[AgentAction]) -> AgentAction | None:
+        """Return a cited final when at least two independent reviewers agree."""
+
+        grouped: dict[str, list[AgentAction]] = {}
+        for action in actions:
+            answer = str(action.payload.get("exact_answer") or "").strip()
+            normalized = cls._normalize_consensus_answer(answer)
+            if normalized:
+                grouped.setdefault(normalized, []).append(action)
+        agreeing = [items for items in grouped.values() if len(items) >= 2]
+        if not agreeing:
+            return None
+
+        def confidence(action: AgentAction) -> float:
+            try:
+                return float(action.payload.get("confidence") or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        agreeing.sort(
+            key=lambda items: (
+                -len(items),
+                -sum(confidence(action) for action in items),
+                cls._normalize_consensus_answer(str(items[0].payload.get("exact_answer") or "")),
+            )
+        )
+        selected = sorted(agreeing[0], key=confidence, reverse=True)
+        citations = list(
+            dict.fromkeys(
+                str(citation).strip()
+                for action in selected
+                for citation in action.payload.get("citations") or []
+                if isinstance(citation, str)
+                and citation.strip().startswith(("http://", "https://"))
+            )
+        )
+        if not citations:
+            return None
+        strongest = selected[0]
+        return AgentAction(
+            action="final",
+            payload={
+                "explanation": str(strongest.payload.get("explanation") or "").strip(),
+                "exact_answer": str(strongest.payload.get("exact_answer") or "").strip(),
+                "confidence": confidence(strongest),
                 "citations": citations,
             },
         )
