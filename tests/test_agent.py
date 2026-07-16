@@ -799,15 +799,7 @@ async def test_agent_forces_final_tool_choice_on_last_step(tmp_path: Path) -> No
         "type": "function",
         "function": {"name": "final"},
     }
-    assert {tool["function"]["name"] for tool in model.kwargs["tools"]} == {
-        "search",
-        "search_many",
-        "open",
-        "open_many",
-        "find",
-        "note",
-        "final",
-    }
+    assert {tool["function"]["name"] for tool in model.kwargs["tools"]} == {"final"}
 
 
 @pytest.mark.asyncio
@@ -846,6 +838,7 @@ async def test_agent_forces_final_tool_choice_after_elapsed_research_limit(
         "type": "function",
         "function": {"name": "final"},
     }
+    assert {tool["function"]["name"] for tool in model.kwargs["tools"]} == {"final"}
 
 
 @pytest.mark.asyncio

@@ -167,7 +167,9 @@ search before finalizing, and its reviews must preserve clue relation types and
 provide their own citations. Source support remains a hard gate on normal turns;
 the configured final hard-budget turn may return one concrete, answer-type-valid
 best effort instead of an empty answer, with the support failure retained in the
-private audit trail. The generic production-broker adapter remains
+private audit trail. Forced-final turns expose only the `final` tool, so a model
+cannot escape the bounded finalization phase by selecting another search action.
+The generic production-broker adapter remains
 available for comparison configs. See
 [`STAR_IMPLEMENTATION.md`](STAR_IMPLEMENTATION.md) for search isolation,
 external-call budgets, and live verification details.

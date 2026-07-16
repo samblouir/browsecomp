@@ -1579,6 +1579,11 @@ class AgentRunner:
                 )
             )
             if force_final:
+                tools = [
+                    tool
+                    for tool in tools
+                    if (tool.get("function") or {}).get("name") == "final"
+                ]
                 tool_choice = {"type": "function", "function": {"name": "final"}}
             elif require_open:
                 # Keep the caller-owned tool schema stable across response-chain
