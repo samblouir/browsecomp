@@ -501,6 +501,10 @@ class AgentRunner:
                     }
                 )
                 if strategy_queries:
+                    # The successful strategy agent already supplied an independent Star-2
+                    # review for this evidence state. Do not immediately launch the automatic
+                    # search-strategy role again after executing its replacement queries.
+                    automatic_external_attempted = True
                     action = AgentAction(
                         action="search_many",
                         payload={"queries": strategy_queries},
@@ -652,8 +656,7 @@ class AgentRunner:
                             "role": "tool",
                             "tool_call_id": rejected_tool_call.get("id", f"call-{step}"),
                             "name": str(
-                                (rejected_tool_call.get("function") or {}).get("name")
-                                or "final"
+                                (rejected_tool_call.get("function") or {}).get("name") or "final"
                             ),
                             "content": canonical_json({"ok": False, "error": correction}),
                         }
@@ -683,8 +686,7 @@ class AgentRunner:
                         ):
                             warning = (
                                 "Hard-budget best-effort final lacked fully inspected source "
-                                "support: "
-                                + "; ".join(evidence_errors)
+                                "support: " + "; ".join(evidence_errors)
                             )
                             errors.append(warning)
                             self._emit(
@@ -776,9 +778,7 @@ class AgentRunner:
             rescue_threshold = self.agent_config.automatic_finalization_rescue_after_rejections
             rescue_seconds = self.agent_config.automatic_finalization_rescue_after_seconds
             elapsed_seconds = time.perf_counter() - started
-            seconds_since_external_completion = (
-                time.perf_counter() - last_external_completion_at
-            )
+            seconds_since_external_completion = time.perf_counter() - last_external_completion_at
             forced_rescue_due = bool(
                 force_final_this_turn
                 and rescue_threshold > 0
@@ -1404,8 +1404,10 @@ class AgentRunner:
                 find_calls += deltas[2]
                 retrieved_chars += deltas[3]
                 if action.action == "ask_external_model":
-                    external_model_calls += int(result.get("attempted", 0))
-                    if int(result.get("attempted", 0)) > 0:
+                    attempted_external = int(result.get("attempted", 0))
+                    external_model_calls += attempted_external
+                    if attempted_external > 0:
+                        automatic_external_attempted = True
                         last_external_completion_at = time.perf_counter()
                 if (
                     force_final
@@ -1580,9 +1582,7 @@ class AgentRunner:
             )
             if force_final:
                 tools = [
-                    tool
-                    for tool in tools
-                    if (tool.get("function") or {}).get("name") == "final"
+                    tool for tool in tools if (tool.get("function") or {}).get("name") == "final"
                 ]
                 tool_choice = {"type": "function", "function": {"name": "final"}}
             elif require_open:
@@ -2306,9 +2306,7 @@ class AgentRunner:
         question_terms = cls._search_query_terms(question) - _LINK_STOPWORDS
         if not question_terms:
             return False
-        page_terms = cls._search_query_terms(
-            f"{page.get('title') or ''}\n{page.get('text') or ''}"
-        )
+        page_terms = cls._search_query_terms(f"{page.get('title') or ''}\n{page.get('text') or ''}")
         required_overlap = min(
             len(question_terms),
             min(8, max(2, (len(question_terms) + 5) // 6)),

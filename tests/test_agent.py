@@ -1466,8 +1466,7 @@ async def test_hard_budget_can_return_concrete_best_effort_after_strict_rejectio
     assert outcome.confidence == 45
     assert sum(event["event"] == "citation_support_final_rejected" for event in events) == 1
     assert any(
-        event["event"] == "citation_support_final_overridden_at_hard_budget"
-        for event in events
+        event["event"] == "citation_support_final_overridden_at_hard_budget" for event in events
     )
     assert len(model.calls) == 2
 
@@ -1701,26 +1700,38 @@ def test_external_answer_consensus_requires_matching_star2_answers_and_opened_ci
         "supporting_citations": ["https://www.example.test/evidence/"],
     }
 
-    assert AgentRunner._external_answer_consensus(
-        [{**consultations[0], "model": "gpt-5.6"}, consultations[1]],
-        question="Which historical pillar does the chronicle identify?",
-        inspected_pages=pages,
-    ) is None
-    assert AgentRunner._external_answer_consensus(
-        [consultations[0], {**consultations[1], "exact_answer": "A Different Pillar"}],
-        question="Which historical pillar does the chronicle identify?",
-        inspected_pages=pages,
-    ) is None
-    assert AgentRunner._external_answer_consensus(
-        consultations,
-        question="Which historical pillar does the chronicle identify?",
-        inspected_pages=[],
-    ) is None
-    assert AgentRunner._external_answer_consensus(
-        [consultations[0], {**consultations[1], "request_id": "helper-a"}],
-        question="Which historical pillar does the chronicle identify?",
-        inspected_pages=pages,
-    ) is None
+    assert (
+        AgentRunner._external_answer_consensus(
+            [{**consultations[0], "model": "gpt-5.6"}, consultations[1]],
+            question="Which historical pillar does the chronicle identify?",
+            inspected_pages=pages,
+        )
+        is None
+    )
+    assert (
+        AgentRunner._external_answer_consensus(
+            [consultations[0], {**consultations[1], "exact_answer": "A Different Pillar"}],
+            question="Which historical pillar does the chronicle identify?",
+            inspected_pages=pages,
+        )
+        is None
+    )
+    assert (
+        AgentRunner._external_answer_consensus(
+            consultations,
+            question="Which historical pillar does the chronicle identify?",
+            inspected_pages=[],
+        )
+        is None
+    )
+    assert (
+        AgentRunner._external_answer_consensus(
+            [consultations[0], {**consultations[1], "request_id": "helper-a"}],
+            question="Which historical pillar does the chronicle identify?",
+            inspected_pages=pages,
+        )
+        is None
+    )
 
 
 def test_external_answer_consensus_rejects_keyword_collision_source() -> None:
@@ -1751,11 +1762,14 @@ def test_external_answer_consensus_rejects_keyword_collision_source() -> None:
             "text": "A weekend Latin Music Tour ticket cost 25 dollars.",
         }
     ]
-    assert AgentRunner._external_answer_consensus(
-        consultations,
-        question=question,
-        inspected_pages=pages,
-    ) is None
+    assert (
+        AgentRunner._external_answer_consensus(
+            consultations,
+            question=question,
+            inspected_pages=pages,
+        )
+        is None
+    )
 
 
 def test_search_many_is_clipped_to_remaining_budget(tmp_path: Path) -> None:
@@ -1880,9 +1894,7 @@ async def test_fresh_external_reviews_reset_wall_clock_rescue_timer(tmp_path: Pa
     assert outcome.exact_answer == "Answer"
     assert outcome.external_model_calls == 1
     assert len(broker.requests) == 1
-    assert not any(
-        event["event"] == "automatic_finalization_rescue_started" for event in events
-    )
+    assert not any(event["event"] == "automatic_finalization_rescue_started" for event in events)
 
 
 @pytest.mark.asyncio
@@ -2144,6 +2156,49 @@ async def test_repeated_search_uses_one_external_strategy_recovery(tmp_path: Pat
         if row.get("role") == "user" and row.get("content", "").startswith("Tool result:")
     ]
     assert any("external_search_strategy_recovery" in row for row in tool_results)
+
+
+@pytest.mark.asyncio
+async def test_strategy_recovery_suppresses_redundant_automatic_consultation(
+    tmp_path: Path,
+) -> None:
+    search = RecordingSearch(tmp_path)
+    broker = QueryStrategyExternalModelBroker()
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=3,
+            max_search_calls=5,
+            automatic_external_after_search_calls=2,
+            automatic_external_requests=1,
+            automatic_page_inspection_after_search_actions=0,
+            max_batch_size=3,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        search,
+        FakeBrowser(),
+        model_client=StagnatingSearchModel(),
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=4,
+        ),
+        external_model_broker=broker,
+    )
+
+    outcome = await runner.run("Question", request_namespace="run:item:strategy-dedupe")
+
+    assert outcome.status == "completed"
+    assert outcome.external_model_calls == 1
+    assert len(broker.calls) == 1
+    assert broker.calls[0][1].endswith(":search-strategy-recovery")
 
 
 @pytest.mark.asyncio
