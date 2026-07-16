@@ -836,9 +836,7 @@ def test_bing_yahoo_merge_interleaves_deduplicates_and_preserves_source() -> Non
 def test_bing_yahoo_merge_uses_one_healthy_engine() -> None:
     yahoo = [SearchResult(title="Yahoo", url="https://example.test/y", source="yahoo_ssh")]
 
-    merged = BingYahooSSHSearchProvider._merge_or_error(
-        SearchError("bing unavailable"), yahoo, 10
-    )
+    merged = BingYahooSSHSearchProvider._merge_or_error(SearchError("bing unavailable"), yahoo, 10)
 
     assert isinstance(merged, list)
     assert [item.url for item in merged] == ["https://example.test/y"]
@@ -851,3 +849,49 @@ def test_bing_yahoo_merge_reports_both_engine_failures() -> None:
 
     assert isinstance(merged, SearchError)
     assert "Both server-side search engines failed" in str(merged)
+
+
+@pytest.mark.asyncio
+async def test_bing_yahoo_disables_engine_that_fails_live_preflight(tmp_path: Path) -> None:
+    class FakeEngine:
+        def __init__(self, result):
+            self.result = result
+            self.search_many_calls = 0
+
+        async def probe_live(self, query: str, count: int = 1):
+            del query, count
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+        async def search_many(self, queries, count=None, offset=0):
+            del count, offset
+            self.search_many_calls += 1
+            return [self.result for _ in queries]
+
+        async def close(self):
+            return None
+
+    provider = BingYahooSSHSearchProvider(
+        SearchConfig(
+            provider="bing_yahoo_ssh",
+            cache_mode="off",
+            cache_path=tmp_path / "meta.sqlite3",
+        )
+    )
+    healthy = FakeEngine(
+        [SearchResult(title="Bing", url="https://example.test/b", source="bing_ssh")]
+    )
+    failed = FakeEngine(SearchError("HTTP/2 framing failure"))
+    provider.bing = healthy
+    provider.yahoo = failed
+
+    rows = await provider.probe_live("test", count=10)
+    batches = await provider.search_many(["one", "two"], count=10)
+
+    assert [row.url for row in rows] == ["https://example.test/b"]
+    assert healthy.search_many_calls == 1
+    assert failed.search_many_calls == 0
+    assert all(isinstance(batch, list) and batch[0].source == "bing_ssh" for batch in batches)
+    assert provider.audit_metrics()["engines"]["yahoo"]["enabled"] is False
+    await provider.close()

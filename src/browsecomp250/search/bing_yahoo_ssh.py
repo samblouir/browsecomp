@@ -21,6 +21,18 @@ class BingYahooSSHSearchProvider(SearchProvider):
         super().__init__(config, client=client)
         self.bing = BingSSHSearchProvider(config, client=self.client)
         self.yahoo = YahooSSHSearchProvider(config, client=self.client)
+        self._disabled_engines: dict[str, str] = {}
+
+    def audit_metrics(self) -> dict[str, object]:
+        return {
+            "engines": {
+                name: {
+                    "enabled": name not in self._disabled_engines,
+                    "disabled_reason": self._disabled_engines.get(name, ""),
+                }
+                for name in ("bing", "yahoo")
+            }
+        }
 
     async def close(self) -> None:
         await self.bing.close()
@@ -39,17 +51,20 @@ class BingYahooSSHSearchProvider(SearchProvider):
             self.yahoo.probe_live(normalized, count=resolved_count),
             return_exceptions=True,
         )
+        self._record_probe_health("bing", bing)
+        self._record_probe_health("yahoo", yahoo)
         results = self._merge_or_raise(bing, yahoo, resolved_count)
         if not results:
             raise SearchError(f"{self.name} live preflight returned no results")
         return results
 
     async def _search_live(self, query: str, count: int, offset: int) -> list[SearchResult]:
-        bing, yahoo = await asyncio.gather(
+        bing, yahoo = await self._run_enabled_pair(
             self.bing.search(query, count=count, offset=offset),
             self.yahoo.search(query, count=count, offset=offset),
-            return_exceptions=True,
         )
+        self._record_single_health("bing", bing)
+        self._record_single_health("yahoo", yahoo)
         return self._merge_or_raise(bing, yahoo, count)
 
     async def search_many(
@@ -59,14 +74,70 @@ class BingYahooSSHSearchProvider(SearchProvider):
         offset: int = 0,
     ) -> list[list[SearchResult] | Exception]:
         resolved_count = min(count or self.config.results_per_call, 20)
-        bing_batches, yahoo_batches = await asyncio.gather(
+        bing_batches, yahoo_batches = await self._run_enabled_pair(
             self.bing.search_many(queries, count=resolved_count, offset=offset),
             self.yahoo.search_many(queries, count=resolved_count, offset=offset),
         )
+        bing_batches = self._normalize_batches("bing", bing_batches, len(queries))
+        yahoo_batches = self._normalize_batches("yahoo", yahoo_batches, len(queries))
         return [
             self._merge_or_error(bing, yahoo, resolved_count)
             for bing, yahoo in zip(bing_batches, yahoo_batches, strict=True)
         ]
+
+    async def _run_enabled_pair(self, bing_call, yahoo_call):
+        calls = []
+        names = []
+        disabled_results: dict[str, SearchError] = {}
+        for name, call in (("bing", bing_call), ("yahoo", yahoo_call)):
+            if name in self._disabled_engines:
+                call.close()
+                disabled_results[name] = self._disabled_error(name)
+                continue
+            names.append(name)
+            calls.append(call)
+        completed = await asyncio.gather(*calls, return_exceptions=True)
+        results = dict(zip(names, completed, strict=True))
+        results.update(disabled_results)
+        return results["bing"], results["yahoo"]
+
+    def _record_probe_health(
+        self,
+        name: str,
+        result: list[SearchResult] | BaseException,
+    ) -> None:
+        if isinstance(result, BaseException):
+            self._disabled_engines[name] = self._error_summary(result)
+
+    def _record_single_health(
+        self,
+        name: str,
+        result: list[SearchResult] | BaseException,
+    ) -> None:
+        if isinstance(result, BaseException):
+            self._disabled_engines.setdefault(name, self._error_summary(result))
+
+    def _normalize_batches(
+        self,
+        name: str,
+        result: list[list[SearchResult] | Exception] | BaseException,
+        count: int,
+    ) -> list[list[SearchResult] | Exception]:
+        if isinstance(result, BaseException):
+            self._disabled_engines.setdefault(name, self._error_summary(result))
+            return [self._disabled_error(name) for _ in range(count)]
+        if result and all(isinstance(batch, Exception) for batch in result):
+            first = next(batch for batch in result if isinstance(batch, Exception))
+            self._disabled_engines.setdefault(name, self._error_summary(first))
+        return result
+
+    def _disabled_error(self, name: str) -> SearchError:
+        reason = self._disabled_engines.get(name, "engine unavailable")
+        return SearchError(f"{name} disabled for this run after live failure: {reason}")
+
+    @staticmethod
+    def _error_summary(error: BaseException) -> str:
+        return f"{type(error).__name__}: {error}"[:500]
 
     @classmethod
     def _merge_or_raise(
