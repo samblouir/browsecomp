@@ -51,6 +51,12 @@ def latest_active_event_mtime(run_dir: Path, active_trials: object) -> float:
                     latest = max(latest, event_path.stat().st_mtime)
                 except OSError:
                     continue
+    for pattern in ("runner.log", "runner-*.log", "repair*.log"):
+        for log_path in run_dir.glob(pattern):
+            try:
+                latest = max(latest, log_path.stat().st_mtime)
+            except OSError:
+                continue
     return latest
 
 

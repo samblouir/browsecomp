@@ -3450,10 +3450,23 @@ class AgentRunner:
 
     @classmethod
     def _looks_like_query_mirror_url(cls, question: str, url: str) -> bool:
+        parsed = urlsplit(url)
+        host = (parsed.hostname or "").casefold().removeprefix("www.")
+        path_casefold = unquote(parsed.path).casefold()
+        # Social topic pages and long job-search slugs are generated from arbitrary queries;
+        # they are not independently authored evidence even when a search engine indexes them.
+        if host == "instagram.com" and path_casefold.startswith("/popular/"):
+            return True
+        if (
+            ("-jobs" in path_casefold or "/jobs/" in path_casefold)
+            and len(path_casefold) >= 60
+            and len(cls._search_query_terms(path_casefold) - _LINK_STOPWORDS) >= 7
+        ):
+            return True
         question_terms = cls._search_query_terms(question) - _LINK_STOPWORDS
         if len(question_terms) < 7:
             return False
-        path = unquote(urlsplit(url).path).replace("-", " ")
+        path = unquote(parsed.path).replace("-", " ")
         path_terms = cls._search_query_terms(path) - _LINK_STOPWORDS
         if len(path) < 80 or len(path_terms) < 8:
             return False

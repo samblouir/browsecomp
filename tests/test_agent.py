@@ -1769,6 +1769,26 @@ def test_external_consultation_urls_reject_query_mirror_paths_without_domain_rul
     ) == [legitimate]
 
 
+def test_query_mirror_filter_rejects_social_topics_and_generated_job_search_slugs() -> None:
+    question = (
+        "An urban planner was interviewed about a boulevard using nine questions. Later, "
+        "students toured the city. What time did they reach their first stop?"
+    )
+    social_topic = (
+        "https://www.instagram.com/popular/"
+        "fewer-than-21-students-toured-city-with-urban-planner-first-stop-time/"
+    )
+    generated_jobs = (
+        "https://au.example.com/Interview-With-Urban-Planner-Boulevard-"
+        "Nine-Questions-European-City-jobs-in-Melbourne-VIC"
+    )
+    legitimate = "https://university.example.edu/studio/tour-itinerary"
+
+    assert AgentRunner._looks_like_query_mirror_url(question, social_topic)
+    assert AgentRunner._looks_like_query_mirror_url(question, generated_jobs)
+    assert not AgentRunner._looks_like_query_mirror_url(question, legitimate)
+
+
 def test_search_results_remove_query_mirrors_before_model_context() -> None:
     question = (
         "Which artist born in England made an album for fun, had a debut album between "

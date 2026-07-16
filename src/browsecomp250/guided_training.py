@@ -6,6 +6,7 @@ import re
 from copy import deepcopy
 from typing import Any
 
+from .question_planning import compile_question_discovery_profile
 from .util import canonical_json
 
 _CANDIDATE_PLACEHOLDER = "${candidate}"
@@ -144,6 +145,24 @@ def compile_guided_steps(
     """Compile one private guide into answer-redacted, one-action Star turns."""
     constraints = route_record.get("constraints") or []
     question_model = route_record.get("question_model") or {}
+    item = oracle_record.get("item") or route_record.get("item") or {}
+    question = str(item.get("question_text") or question_model.get("normalized_question") or "")
+    if not question:
+        question = ". ".join(
+            str(value.get("original_text") or "").strip()
+            for value in constraints
+            if str(value.get("original_text") or "").strip()
+        )
+    route_query_rungs = [
+        _tool_queries(route_record, step_id)[:7]
+        for step_id in ("S004", "S005", "S006")
+    ]
+    discovery_profile = compile_question_discovery_profile(
+        question,
+        topic=str(item.get("topic") or "Other"),
+        route_question_model=question_model,
+        route_queries=route_query_rungs,
+    )
     steps: list[dict[str, Any]] = [
         {
             "id": "constraint_audit",
@@ -154,8 +173,10 @@ def compile_guided_steps(
                 "Save one compact note containing supported/unknown/refuted cells; do not answer yet.\n"
                 + canonical_json(
                     {
-                        "answer_type": question_model.get("answer_type"),
-                        "answer_cardinality": question_model.get("answer_cardinality"),
+                        "answer_type": discovery_profile["answer_type"],
+                        "answer_cardinality": discovery_profile["answer_cardinality"],
+                        "answer_type_inference": discovery_profile["answer_type_inference"],
+                        "terminal_ask": discovery_profile["terminal_ask"],
                         "constraints": [
                             {
                                 "id": value.get("constraint_id"),
@@ -179,8 +200,10 @@ def compile_guided_steps(
                 + canonical_json(
                     {
                         "topology": question_model.get("topology"),
-                        "rare_anchors": question_model.get("lexical_anchors"),
-                        "source_targets": question_model.get("source_targets"),
+                        "rare_anchors": discovery_profile["question_first_anchors"],
+                        "source_targets": discovery_profile["source_targets"],
+                        "source_native_terms": discovery_profile["source_native_terms"],
+                        "metadata_policy": discovery_profile["route_metadata_role"],
                         "workers": [
                             {
                                 "role": worker.get("role"),
@@ -286,8 +309,14 @@ def compile_guided_steps(
         )
 
     if not sources:
-        for ordinal, step_id in enumerate(("S004", "S005", "S006"), start=1):
-            queries = _tool_queries(route_record, step_id)[:7]
+        for ordinal, (step_id, queries) in enumerate(
+            zip(
+                ("S004", "S005", "S006"),
+                discovery_profile["query_rungs"],
+                strict=True,
+            ),
+            start=1,
+        ):
             if not queries:
                 continue
             steps.append(
@@ -295,10 +324,11 @@ def compile_guided_steps(
                     "id": f"guide_search_rung_{ordinal}",
                     "plan_step_ids": [step_id],
                     "instruction": (
-                        "Execute this guide-supplied discovery rung as one batched search. Use the "
-                        "queries as high-value seeds, preserving their rare anchors and relation "
-                        "direction, but omit redundant variants or make minimal search-engine "
-                        "syntax repairs when useful. Do not finalize.\n"
+                        "Execute this question-first discovery rung as one batched search. These "
+                        "queries were rebuilt from multiple information-bearing clues because "
+                        "guide metadata can contain generic sentence starters or a topic-derived "
+                        "source mismatch. Preserve relation direction, make minimal search-engine "
+                        "syntax repairs when useful, inspect promising sources, and do not finalize.\n"
                         + canonical_json({"queries": queries})
                     ),
                     "allowed_actions": ["search_many"],
@@ -510,7 +540,15 @@ def compile_guided_steps(
 
     review_guidance = canonical_json(
         {
-            "question_model": question_model,
+            "question_model": {
+                **question_model,
+                "answer_type": discovery_profile["answer_type"],
+                "answer_cardinality": discovery_profile["answer_cardinality"],
+                "lexical_anchors": discovery_profile["question_first_anchors"],
+                "source_targets": discovery_profile["source_targets"],
+                "answer_type_inference": discovery_profile["answer_type_inference"],
+                "route_metadata_role": discovery_profile["route_metadata_role"],
+            },
             "constraints": constraints,
             "mapped_sources": [
                 {

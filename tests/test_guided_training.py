@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from browsecomp250.agent.runner import SCRIPTED_FINAL_SYSTEM_PROMPT
+from browsecomp250.config import load_config
 from browsecomp250.guided_training import (
     audit_system_messages,
     compile_guided_steps,
@@ -10,6 +14,11 @@ from browsecomp250.guided_training import (
     curate_scripted_training_messages,
     training_message_quality,
 )
+from browsecomp250.question_planning import (
+    compile_question_discovery_profile,
+    infer_answer_contract,
+)
+from scripts.run_full_guided_training import worker_resources
 
 
 def _records(*, sources: bool = True):
@@ -169,17 +178,128 @@ def test_compiler_supplies_route_queries_without_brittle_exact_match_gate() -> N
 
     query_steps = [step for step in steps if step["id"].startswith("guide_search_rung_")]
     assert len(query_steps) == 3
-    assert [
+    emitted_queries = [
         query
         for step in query_steps
         for query in json.loads(step["instruction"].split("\n", 1)[1])["queries"]
-    ] == ["rare 1901", "archive 1901", "site:x 1901"]
+    ]
+    assert "rare 1901" in emitted_queries
+    assert "archive 1901" in emitted_queries
+    assert all(len(query.split()) >= 2 for query in emitted_queries)
     assert all("required_queries" not in step for step in query_steps)
     assert any(step["allowed_actions"] == ["ask_external_model"] for step in steps)
     helper = next(step for step in steps if step["id"] == "independent_research_helper")
     assert helper["minimum_batch_size"] == 4
     review = next(step for step in steps if step["id"] == "pre_final_adversarial_review")
     assert review["minimum_batch_size"] == 2
+
+
+def test_terminal_clock_request_overrides_incidental_geography_words() -> None:
+    question = (
+        "An urban planner worked on a boulevard in a European city. Fewer than 21 students "
+        "later toured the city with the planner. Using the 12-hour clock format, what time "
+        "did they reach their first stop?"
+    )
+
+    contract = infer_answer_contract(question, fallback_type="place")
+
+    assert contract["answer_type"] == "time"
+    assert contract["terminal_ask"].startswith("Using the 12-hour")
+
+
+def test_directive_sentence_wins_over_name_mentioned_inside_later_clue() -> None:
+    question = (
+        "Using independent sources, provide the name of the mystery settlement: 1. A fire "
+        "occurred nearby. 2. A hospital shares a name with the settlement."
+    )
+
+    contract = infer_answer_contract(question, fallback_type="other_short_string")
+
+    assert contract["answer_type"] == "place"
+    assert contract["terminal_ask"].startswith("Using independent sources")
+
+
+def test_question_first_profile_rejects_generic_route_anchors_and_geography_bias() -> None:
+    question = (
+        "A person was interviewed on the first Tuesday between 2008 and 2018. The inquiry "
+        "guide had nine questions about an urban planner and a boulevard. Less than a year "
+        "later, fewer than 21 students toured the city with that planner. Using the 12-hour "
+        "clock format, what time did they reach the first stop?"
+    )
+    profile = compile_question_discovery_profile(
+        question,
+        topic="Geography",
+        route_question_model={
+            "answer_type": "place",
+            "answer_cardinality": {"minimum": 1, "maximum": 1, "ordered": False},
+            "lexical_anchors": ["Tuesday", "Less", "These", "Using"],
+            "source_targets": ["GeoNames", "gazetteers"],
+        },
+        route_queries=[
+            ['"Tuesday"', '"Less"', '"These"'],
+            ['"Tuesday" "Less"'],
+            ['site:geonames.org "Tuesday"'],
+        ],
+    )
+
+    assert profile["answer_type"] == "time"
+    assert not {"Tuesday", "Less", "These", "Using"} & set(
+        profile["question_first_anchors"]
+    )
+    assert "university course and studio archives" in profile["source_targets"]
+    assert "GeoNames" not in profile["source_targets"]
+    all_queries = [query for rung in profile["query_rungs"] for query in rung]
+    assert all(query not in {'"Tuesday"', '"Less"', '"These"'} for query in all_queries)
+    assert any("nine questions" in query.casefold() for query in all_queries)
+    assert not any(
+        '"person interviewed first Tuesday particular month 2008 2018"' in query
+        for query in all_queries
+    )
+
+
+def test_document_and_designer_question_uses_native_document_sources_not_art_museums() -> None:
+    question = (
+        "A global health report credited a foreword author and an introduction author. Its "
+        "cover designer studied publishing and previously worked at two agencies. What is the "
+        "first and last name of the cover designer of this report?"
+    )
+    profile = compile_question_discovery_profile(
+        question,
+        topic="Art",
+        route_question_model={
+            "answer_type": "person",
+            "source_targets": ["museum collection catalogs", "auction records"],
+        },
+        route_queries=[[], [], []],
+    )
+
+    assert profile["answer_type"] == "person"
+    assert "report colophons and publisher credits" in profile["source_targets"]
+    assert "designer portfolios and professional biographies" in profile["source_targets"]
+    assert "museum collection catalogs" not in profile["source_targets"]
+
+
+@pytest.mark.asyncio
+async def test_guided_worker_and_star2_helpers_fail_closed_on_unsupported_finals(
+    tmp_path: Path,
+) -> None:
+    config = load_config(Path("configs/star-headline.yaml"))
+    config.search.cache_path = tmp_path / "search.sqlite3"
+    config.browser.cache_path = tmp_path / "pages.sqlite3"
+
+    resources = worker_resources(
+        0,
+        config,
+        star7_endpoint="http://star7.test/v1",
+        star2_endpoint="http://star2.test/v1",
+    )
+    try:
+        assert resources.config.agent.require_opened_citation_support is True
+        assert resources.config.agent.allow_unsupported_final_at_hard_budget is False
+        assert resources.external_model.agent_config.require_opened_citation_support is True
+        assert resources.external_model.agent_config.allow_unsupported_final_at_hard_budget is False
+    finally:
+        await resources.close()
 
 
 def test_compiler_adds_geo_verification_for_multiple_distance_constraints() -> None:

@@ -467,7 +467,9 @@ def worker_resources(
     }
     config.search.provider = "brave"
     config.search.live_preflight = False
-    config.agent.require_opened_citation_support = False
+    # Correctness training must fail closed: a candidate is not exportable merely because
+    # Star-7 and its reviewers repeat it. At least one cited, inspected page must name it.
+    config.agent.require_opened_citation_support = True
     config.agent.allow_unsupported_final_at_hard_budget = False
     config.agent.automatic_external_strategy_recovery = False
     config.agent.automatic_finalization_rescue_after_rejections = 0
@@ -486,8 +488,9 @@ def worker_resources(
     helper_agent_config = config.agent.model_copy(
         deep=True,
         update={
-            "require_citations": False,
-            "require_opened_citation_support": False,
+            "require_citations": True,
+            "require_opened_citation_support": True,
+            "allow_unsupported_final_at_hard_budget": False,
         },
     )
     external_model = AgentExternalModelBroker(
