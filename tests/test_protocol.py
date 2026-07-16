@@ -207,6 +207,78 @@ def test_forced_guide_step_restores_only_its_redacted_query_contract() -> None:
     }
 
 
+def test_forced_guide_open_uses_exact_url_even_if_worker_returns_wrong_known_tool() -> None:
+    action, canonical = canonicalize_tool_call(
+        {
+            "function": {
+                "name": "search_many",
+                "arguments": '{"queries":["wrong transport action"]}',
+            }
+        },
+        expected_action="open",
+        required_urls=["https://example.test/exact-redacted-source"],
+    )
+
+    assert action.action == "open"
+    assert action.payload == {"url": "https://example.test/exact-redacted-source"}
+    assert canonical["function"]["name"] == "open"
+
+
+def test_forced_external_step_fills_four_distinct_research_roles() -> None:
+    action, canonical = canonicalize_tool_call(
+        {
+            "function": {
+                "name": "ask_external_model",
+                "arguments": json.dumps(
+                    {
+                        "requests": [
+                            {
+                                "context": "Original question and evidence.\nRole: rare-anchor solver.\nquery:",
+                                "damaged serialized query": "unusable",
+                            }
+                        ]
+                    }
+                ),
+            }
+        },
+        expected_action="ask_external_model",
+        minimum_batch_size=4,
+        external_context="Fallback original question and public evidence.",
+    )
+
+    requests = action.payload["requests"]
+    assert len(requests) == 4
+    assert all(request["query"].strip() for request in requests)
+    assert {request.get("system") for request in requests if request.get("system")} == {
+        "Act as the independent rare-anchor solver for this research task.",
+        "Act as the independent relation-graph inverter for this research task.",
+        "Act as the independent alternate-candidate falsifier for this research task.",
+        "Act as the independent evidence and canonical-form auditor for this research task.",
+    }
+    assert json.loads(canonical["function"]["arguments"]) == action.payload
+
+
+def test_forced_external_step_recovers_wrong_known_action_from_public_context() -> None:
+    action, _ = canonicalize_tool_call(
+        {
+            "function": {
+                "name": "search_many",
+                "arguments": '{"queries":["candidate search"]}',
+            }
+        },
+        expected_action="ask_external_model",
+        minimum_batch_size=4,
+        external_context="Original question plus accumulated public evidence.",
+    )
+
+    assert action.action == "ask_external_model"
+    assert len(action.payload["requests"]) == 4
+    assert all(
+        request["context"] == "Original question plus accumulated public evidence."
+        for request in action.payload["requests"]
+    )
+
+
 def test_external_tool_schema_exposes_no_provider_or_generation_overrides() -> None:
     external = next(
         tool for tool in tool_schemas() if tool["function"]["name"] == "ask_external_model"

@@ -26,6 +26,12 @@ class ProtocolError(ValueError):
 
 _GEMMA_STRING_DELIMITER = '<|"|>'
 _GEMMA_TOOL_CALL_SUFFIX = "<tool_call|>"
+_EXTERNAL_RESEARCH_ROLES = (
+    "rare-anchor solver",
+    "relation-graph inverter",
+    "alternate-candidate falsifier",
+    "evidence and canonical-form auditor",
+)
 
 
 class _GemmaFunctionArgumentsParser:
@@ -353,12 +359,78 @@ def _normalize_external_requests(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if key in allowed}
 
 
+def _ensure_external_request_batch(
+    payload: dict[str, Any],
+    *,
+    minimum_batch_size: int | None,
+    fallback_context: str | None,
+) -> dict[str, Any]:
+    if not isinstance(minimum_batch_size, int) or minimum_batch_size <= 1:
+        return payload
+    target = min(4, minimum_batch_size)
+    raw_requests = payload.get("requests")
+    request_values = raw_requests if isinstance(raw_requests, list) else []
+    requests = [
+        dict(item)
+        for item in request_values
+        if isinstance(item, dict)
+        and isinstance(item.get("query"), str)
+        and bool(item["query"].strip())
+    ]
+    if len(requests) >= target:
+        return {"requests": requests[:4]}
+
+    context_candidates = [
+        str(item.get("context") or "").removesuffix("\nquery:").strip()
+        for item in request_values
+        if isinstance(item, dict) and str(item.get("context") or "").strip()
+    ]
+    if fallback_context and fallback_context.strip():
+        context_candidates.append(fallback_context.strip())
+    context = max(context_candidates, key=len, default="")
+    existing_text = "\n".join(
+        str(value)
+        for request in requests
+        for value in (request.get("query"), request.get("system"))
+        if value
+    ).casefold()
+    for role in _EXTERNAL_RESEARCH_ROLES:
+        if len(requests) >= target:
+            break
+        if role.casefold() in existing_text:
+            continue
+        requests.append(
+            {
+                "system": f"Act as the independent {role} for this research task.",
+                "query": (
+                    f"As the {role}, independently identify one specific candidate, test the "
+                    "complete clue chain, state unresolved gaps, and return public citation URLs."
+                ),
+                "context": context,
+            }
+        )
+    while len(requests) < target:
+        role = _EXTERNAL_RESEARCH_ROLES[len(requests) % len(_EXTERNAL_RESEARCH_ROLES)]
+        requests.append(
+            {
+                "query": (
+                    f"Independently re-check the supplied research task as the {role}; return a "
+                    "specific candidate, decisive evidence, counterevidence, and public URLs."
+                ),
+                "context": context,
+            }
+        )
+    return {"requests": requests[:4]}
+
+
 def canonicalize_tool_call(
     tool_call: dict[str, Any],
     *,
     expected_action: str | None = None,
     required_queries: list[str] | None = None,
     required_urls: list[str] | None = None,
+    minimum_batch_size: int | None = None,
+    external_context: str | None = None,
 ) -> tuple[AgentAction, dict[str, Any]]:
     """Return a validated action and the canonical OpenAI tool-call representation."""
 
@@ -402,20 +474,39 @@ def canonicalize_tool_call(
         }
         if name == expected_action or frozenset({name, expected_action}) in related:
             name = expected_action
-    if name == expected_action == "search" and required_queries:
+    if expected_action == "search" and required_queries:
+        name = expected_action
         payload["query"] = str(required_queries[0])
         payload.pop("queries", None)
-    elif name == expected_action == "search_many" and required_queries:
+        payload.pop("url", None)
+        payload.pop("urls", None)
+    elif expected_action == "search_many" and required_queries:
+        name = expected_action
         payload["queries"] = [str(value) for value in required_queries]
         payload.pop("query", None)
-    elif name == expected_action == "open" and required_urls:
+        payload.pop("url", None)
+        payload.pop("urls", None)
+    elif expected_action == "open" and required_urls:
+        name = expected_action
         payload["url"] = str(required_urls[0])
         payload.pop("urls", None)
-    elif name == expected_action == "open_many" and required_urls:
+        payload.pop("query", None)
+        payload.pop("queries", None)
+    elif expected_action == "open_many" and required_urls:
+        name = expected_action
         payload["urls"] = [str(value) for value in required_urls]
         payload.pop("url", None)
+        payload.pop("query", None)
+        payload.pop("queries", None)
+    elif expected_action == "ask_external_model" and isinstance(minimum_batch_size, int):
+        name = expected_action
     if name == "ask_external_model":
         payload = _normalize_external_requests(payload)
+        payload = _ensure_external_request_batch(
+            payload,
+            minimum_batch_size=minimum_batch_size,
+            fallback_context=external_context,
+        )
     _validate_payload(name, payload)
     action = AgentAction(action=name, payload=payload)  # type: ignore[arg-type]
     function["name"] = name

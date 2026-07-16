@@ -333,8 +333,9 @@ def compile_guided_steps(
                 "gathered so far, but assign distinct roles: rare-anchor solver, relation-graph "
                 "inverter, alternate-candidate falsifier, and evidence/canonical-form auditor. "
                 "Each must return one specific candidate, the decisive clue chain, unresolved "
-                "gaps, and public citation URLs. Use max_tokens=16384, temperature=0.7, and "
-                "top_p=0.95 for every request. Do not finalize on this turn."
+                "gaps, and public citation URLs. Generation settings and routing are supplied by "
+                "the deployment; do not request or name a provider or model. Do not finalize on "
+                "this turn."
             ),
             "allowed_actions": ["ask_external_model"],
             "minimum_batch_size": 4,

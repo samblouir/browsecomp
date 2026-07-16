@@ -598,6 +598,23 @@ class AgentRunner:
                     if current_scripted_step is not None
                     else None
                 )
+                minimum_batch_size = (
+                    current_scripted_step.get("minimum_batch_size")
+                    if current_scripted_step is not None
+                    else None
+                )
+                external_context = None
+                if scripted_required_action == "ask_external_model":
+                    external_context = truncate_middle(
+                        question
+                        + (
+                            "\n\nPublic evidence gathered so far:\n"
+                            + canonical_json(evidence_journal)
+                            if evidence_journal
+                            else ""
+                        ),
+                        80_000,
+                    )
                 try:
                     _, canonical_tool_call = canonicalize_tool_call(
                         raw_tool_call,
@@ -606,6 +623,10 @@ class AgentRunner:
                             required_queries if isinstance(required_queries, list) else None
                         ),
                         required_urls=(required_urls if isinstance(required_urls, list) else None),
+                        minimum_batch_size=(
+                            minimum_batch_size if isinstance(minimum_batch_size, int) else None
+                        ),
+                        external_context=external_context,
                     )
                 except ProtocolError:
                     # Preserve malformed evidence for the ordinary protocol-retry path.
