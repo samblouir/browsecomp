@@ -105,9 +105,10 @@ performs a minimal-pair adversarial check, and returns discriminating search
 routes. The controller executes those routes and opens their evidence. The
 parent can request another focused helper only when a concrete
 contradiction, identity ambiguity, or answer-type dispute remains. This avoids
-launching four overlapping full browsing agents on routine items. The hard
-per-item helper budget is three: one strategy helper, then at most one reviewer
-and one adjudicator after a forced-final failure. Helper output is embedded in
+launching overlapping full browsing agents on routine items. The hard per-item
+helper budget is eight: one routine strategy helper, with the remaining calls
+reserved for evidence-triggered reviewers, adjudication, and repair after a
+forced-final failure. Helper output is embedded in
 the current search tool result, preserving the normal assistant/tool
 continuation on the parent chain. Public URLs proposed by the helper are opened
 automatically and attached for factual checking. A helper failure does not
