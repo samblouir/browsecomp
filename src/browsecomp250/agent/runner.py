@@ -2744,23 +2744,73 @@ class AgentRunner:
         unique_pages: dict[str, PageDocument] = {}
         for document in opened.values():
             unique_pages[document.final_url] = document
+        milestone_markers = (
+            "independent_external_consultation",
+            "external_search_strategy_recovery",
+            "verified_evidence_highlights",
+        )
+        milestone_evidence = [
+            truncate_middle(str(message.get("content") or ""), 12_000)
+            for message in messages
+            if message.get("role") == "tool"
+            and any(marker in str(message.get("content") or "") for marker in milestone_markers)
+        ][-4:]
         summary = {
             "saved_notes": notes[-20:],
+            "preserved_milestone_evidence": milestone_evidence,
             "opened_pages": [
                 {"url": document.final_url, "title": document.title, "sha256": document.sha256}
                 for document in list(unique_pages.values())[-30:]
             ],
-            "instruction": "Continue the same task. Re-open pages when more text is needed.",
+            "instruction": (
+                "Continue the same task. Preserve the independent Star helper leads and decisive "
+                "evidence above. Re-open pages when more text is needed."
+            ),
         }
-        return [
+        prefix = [
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": initial_user},
+        ]
+        fixed_prefix_chars = sum(len(str(message.get("content") or "")) for message in prefix)
+        summary_text = "Deterministic history compaction:\n" + canonical_json(summary)
+        summary_budget = max(
+            0,
+            self.agent_config.max_history_chars // 2 - fixed_prefix_chars,
+        )
+        prefix.append(
             {
                 "role": "user",
-                "content": "Deterministic history compaction:\n" + canonical_json(summary),
-            },
-            *messages[-8:],
+                "content": truncate_middle(summary_text, summary_budget),
+            }
+        )
+        tail_start = max(2, len(messages) - 8)
+        while tail_start < len(messages) and messages[tail_start].get("role") == "tool":
+            tail_start += 1
+        tail = [dict(message) for message in messages[tail_start:]]
+
+        fixed_chars = sum(len(str(message.get("content") or "")) for message in prefix)
+        content_indices = [
+            index for index, message in enumerate(tail) if str(message.get("content") or "")
         ]
+        available_chars = max(0, self.agent_config.max_history_chars - fixed_chars)
+        per_message_chars = (
+            available_chars // len(content_indices) if content_indices else available_chars
+        )
+        for index in content_indices:
+            content = str(tail[index].get("content") or "")
+            tail[index]["content"] = truncate_middle(content, per_message_chars)
+
+        compacted = [*prefix, *tail]
+        compacted_size = sum(len(str(message.get("content") or "")) for message in compacted)
+        self._emit(
+            "history_compacted",
+            before_chars=size,
+            after_chars=compacted_size,
+            max_chars=self.agent_config.max_history_chars,
+            retained_tail_messages=len(tail),
+            preserved_milestones=len(milestone_evidence),
+        )
+        return compacted
 
     def _final_outcome(
         self,

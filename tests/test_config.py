@@ -89,22 +89,24 @@ report: {}
 
 
 @pytest.mark.parametrize(
-    ("name", "strategy_recovery", "max_calls"),
+    ("name", "strategy_recovery", "max_calls", "automatic_requests", "rescue_seconds"),
     [
-        ("star-dev-baseline.yaml", False, 3),
-        ("star-smoke.yaml", False, 3),
-        ("star-headline.yaml", True, 4),
+        ("star-dev-baseline.yaml", False, 3, 1, 0),
+        ("star-smoke.yaml", False, 3, 1, 0),
+        ("star-headline.yaml", True, 4, 2, 900),
     ],
 )
 def test_star_profiles_use_selective_star2_help(
     name: str,
     strategy_recovery: bool,
     max_calls: int,
+    automatic_requests: int,
+    rescue_seconds: int,
 ) -> None:
     parsed = load_config(Path(__file__).parents[1] / "configs" / name)
-    assert parsed.agent.automatic_external_requests == 1
+    assert parsed.agent.automatic_external_requests == automatic_requests
     assert parsed.agent.automatic_external_strategy_recovery is strategy_recovery
-    assert parsed.agent.automatic_finalization_rescue_after_seconds == 0
+    assert parsed.agent.automatic_finalization_rescue_after_seconds == rescue_seconds
     assert parsed.external_model.mode == "agent"
     assert parsed.external_model.agent_model == "frontierrl/star-2"
     assert parsed.external_model.max_calls_per_task == max_calls
@@ -114,6 +116,8 @@ def test_star_profiles_use_selective_star2_help(
     assert parsed.model.response_chain is False
     assert parsed.external_model.agent_api_base == "http://127.0.0.1:8003/v1"
     assert parsed.external_model.agent_response_chain is False
+    if name == "star-headline.yaml":
+        assert parsed.agent.max_history_chars == 300000
 
 
 def test_unknown_config_field_is_rejected(tmp_path: Path) -> None:

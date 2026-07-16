@@ -53,3 +53,27 @@ def test_unscored_error_does_not_claim_first_pass_slot(tmp_path: Path) -> None:
     assert summary["first_pass"]["scored"] == 1
     assert summary["first_pass"]["correct"] == 1
     assert summary["unscored_records"] == 1
+
+
+def test_campaign_quarantines_corrupt_jsonl_without_losing_valid_rows(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    path = runs / "interrupted" / "private" / "trials.jsonl"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        '{"status":"timeout","correct":null,\n'
+        + json.dumps(_record(4, "2026-07-15T12:00:00+00:00", True))
+        + "\n"
+    )
+
+    output = tmp_path / "ledger"
+    summary = write_campaign_ledgers(runs, output)
+
+    assert summary["repaired"]["scored"] == 1
+    assert summary["repaired"]["correct"] == 1
+    assert summary["unscored_records"] == 1
+    quarantined = json.loads((output / "unscored.jsonl").read_text())
+    assert quarantined["status"] == "corrupt_record"
+    assert quarantined["campaign_source_line"] == 1
+    assert quarantined["raw_line_chars"] > 0
+    assert len(quarantined["raw_line_sha256"]) == 64
+    assert "JSONDecodeError" in quarantined["error"]

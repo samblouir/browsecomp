@@ -1141,6 +1141,63 @@ async def test_agent_rejects_final_that_violates_explicit_surface_constraint(
     assert any(event["event"] == "surface_constraint_final_rejected" for event in events)
 
 
+def test_history_compaction_preserves_star_helper_milestone_and_bounds_payload(
+    tmp_path: Path,
+) -> None:
+    events: list[dict] = []
+    runner = AgentRunner(
+        ModelConfig(api_base="http://model.test/v1", api_key="k", model="m"),
+        AgentConfig(max_history_chars=30_000),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=FakeModel(),
+        event_sink=events.append,
+    )
+    initial_user = "Question:\nIdentify the entity."
+    messages: list[dict] = [
+        {"role": "system", "content": runner.system_prompt},
+        {"role": "user", "content": initial_user},
+    ]
+    for index in range(5):
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call-{index}",
+                        "type": "function",
+                        "function": {"name": "search", "arguments": '{"query":"clue"}'},
+                    }
+                ],
+            }
+        )
+        marker = "independent_external_consultation" if index == 0 else "search_results"
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": f"call-{index}",
+                "name": "search",
+                "content": f'{{"{marker}":"candidate"}}' + ("x" * 20_000),
+            }
+        )
+
+    compacted = runner._compact_history(messages, initial_user, [], {})
+    compacted_content = "\n".join(str(message.get("content") or "") for message in compacted)
+
+    assert len(compacted_content) <= 30_000 + len(compacted) - 1
+    assert "independent_external_consultation" in compacted_content
+    assert compacted[0]["role"] == "system"
+    assert compacted[1]["role"] == "user"
+    assert compacted[3]["role"] == "assistant"
+    assert compacted[4]["role"] == "tool"
+    compaction_event = next(event for event in events if event["event"] == "history_compacted")
+    assert compaction_event["before_chars"] > compaction_event["after_chars"]
+    assert compaction_event["after_chars"] <= 30_000
+    assert compaction_event["preserved_milestones"] == 1
+
+
 @pytest.mark.asyncio
 async def test_agent_retries_instead_of_accepting_abstention(tmp_path: Path) -> None:
     runner = AgentRunner(

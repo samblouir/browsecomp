@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from collections.abc import Iterable
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,34 @@ def load_campaign_records(runs_root: Path) -> tuple[list[dict[str, Any]], list[d
         for line_number, line in enumerate(path.read_text().splitlines(), start=1):
             if not line.strip():
                 continue
-            record = json.loads(line)
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                unscored.append(
+                    {
+                        "status": "corrupt_record",
+                        "correct": None,
+                        "error": f"JSONDecodeError: {exc}",
+                        "campaign_source": str(path),
+                        "campaign_source_line": line_number,
+                        "raw_line_chars": len(line),
+                        "raw_line_sha256": sha256(line.encode("utf-8")).hexdigest(),
+                    }
+                )
+                continue
+            if not isinstance(record, dict):
+                unscored.append(
+                    {
+                        "status": "invalid_record",
+                        "correct": None,
+                        "error": f"JSON record must be an object, got {type(record).__name__}",
+                        "campaign_source": str(path),
+                        "campaign_source_line": line_number,
+                        "raw_line_chars": len(line),
+                        "raw_line_sha256": sha256(line.encode("utf-8")).hexdigest(),
+                    }
+                )
+                continue
             record["campaign_source"] = str(path)
             record["campaign_source_line"] = line_number
             if (
@@ -70,7 +98,11 @@ def write_campaign_ledgers(runs_root: Path, output_dir: Path) -> dict[str, Any]:
     scored, unscored = load_campaign_records(runs_root)
     first_pass, repaired = build_campaign_ledgers(scored)
     output_dir.mkdir(parents=True, exist_ok=True)
-    for name, records in (("first_pass.jsonl", first_pass), ("repaired.jsonl", repaired)):
+    for name, records in (
+        ("first_pass.jsonl", first_pass),
+        ("repaired.jsonl", repaired),
+        ("unscored.jsonl", unscored),
+    ):
         payload = "".join(json.dumps(record, sort_keys=True) + "\n" for record in records)
         (output_dir / name).write_text(payload)
 
