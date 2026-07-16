@@ -12,6 +12,7 @@ _ALLOWED_ACTIONS = {
     "open",
     "open_many",
     "find",
+    "geo_search",
     "ask_external_model",
     "note",
     "final",
@@ -83,6 +84,27 @@ def _validate_payload(action: str, payload: dict[str, Any]) -> None:
     elif action == "find":
         if not isinstance(payload.get("url"), str) or not isinstance(payload.get("pattern"), str):
             raise ProtocolError("find requires url and pattern")
+    elif action == "geo_search":
+        anchors = payload.get("anchors")
+        if (
+            not isinstance(anchors, list)
+            or not 1 <= len(anchors) <= 4
+            or not all(
+                isinstance(item, dict)
+                and isinstance(item.get("query"), str)
+                and bool(item["query"].strip())
+                for item in anchors
+            )
+        ):
+            raise ProtocolError("geo_search requires one to four query anchors")
+        for item in anchors:
+            expected = item.get("expected_distance_miles")
+            if expected is not None and (
+                not isinstance(expected, (int, float))
+                or isinstance(expected, bool)
+                or not 0 <= float(expected) <= 500
+            ):
+                raise ProtocolError("geo_search expected_distance_miles must be between 0 and 500")
     elif action == "ask_external_model":
         query = payload.get("query")
         requests = payload.get("requests")

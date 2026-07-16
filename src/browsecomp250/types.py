@@ -71,6 +71,7 @@ class AgentAction:
         "open",
         "open_many",
         "find",
+        "geo_search",
         "ask_external_model",
         "note",
         "final",

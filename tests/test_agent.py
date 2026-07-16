@@ -884,11 +884,12 @@ async def test_agent_keeps_tool_schema_stable_when_page_inspection_is_due(tmp_pa
         "search",
         "search_many",
         "open",
-        "open_many",
-        "find",
-        "note",
-        "final",
-    }
+            "open_many",
+            "find",
+            "geo_search",
+            "note",
+            "final",
+        }
 
 
 def test_result_has_urls_detects_batched_search_candidates() -> None:
@@ -1485,6 +1486,83 @@ def test_final_evidence_preserves_literal_hashtag_relation() -> None:
         "#ActorName",
         [page.final_url],
         opened,
+    )
+
+
+def test_long_multihop_final_requires_two_answer_naming_opened_sources() -> None:
+    question = (
+        "A 2018 database paper cataloged experimentally validated transcription factors. "
+        "One author later joined an international research group in 2021. "
+        "Which scientist also collaborated on the group's earlier genomics project? "
+        "Give the scientist's full name based on the publication and group records."
+    )
+    first = PageDocument(
+        requested_url="https://journal.test/paper",
+        final_url="https://journal.test/paper",
+        title="2018 transcription factor database paper",
+        text="Scientist Ada Example authored the validated transcription factor database paper.",
+        content_type="text/plain",
+        status_code=200,
+    )
+    second = PageDocument(
+        requested_url="https://group.test/members",
+        final_url="https://group.test/members",
+        title="International genomics research group members",
+        text="Ada Example joined the international research group and genomics project.",
+        content_type="text/plain",
+        status_code=200,
+    )
+
+    one_source_errors = AgentRunner._final_evidence_constraint_errors(
+        question,
+        "Ada Example",
+        [first.final_url],
+        {first.final_url: first, second.final_url: second},
+    )
+    assert one_source_errors and "only 1 was supplied" in one_source_errors[0]
+    assert not AgentRunner._final_evidence_constraint_errors(
+        question,
+        "Ada Example",
+        [first.final_url, second.final_url],
+        {first.final_url: first, second.final_url: second},
+    )
+
+
+def test_distance_constrained_place_requires_ranked_cross_anchor_geo_evidence() -> None:
+    question = (
+        "Which restaurant is 1.2 miles walking from Alpha Mall and 2.4 miles from Beta Stadium?"
+    )
+    evidence = [
+        {
+            "ok": True,
+            "anchors": [
+                {"ok": True, "expected_distance_miles": 1.2},
+                {"ok": True, "expected_distance_miles": 2.4},
+            ],
+            "shared_entities": [
+                {
+                    "label": "Correct Restaurant",
+                    "expected_distance_anchor_count": 2,
+                }
+            ],
+        }
+    ]
+
+    assert not AgentRunner._geo_final_constraint_errors(
+        question,
+        "Correct Restaurant and Grill",
+        evidence,
+    )
+    assert AgentRunner._geo_final_constraint_errors(
+        question,
+        "Unrelated Restaurant",
+        evidence,
+    )
+    evidence[0]["anchors"][1]["expected_distance_miles"] = None
+    assert AgentRunner._geo_final_constraint_errors(
+        question,
+        "Correct Restaurant",
+        evidence,
     )
 
 

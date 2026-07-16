@@ -15,6 +15,7 @@ from ..browser.extract import page_window
 from ..browser.fetcher import BrowserError, PageFetcher
 from ..config import AgentConfig, BrowserConfig, ExternalModelConfig, ModelConfig
 from ..external import ExternalModelBroker, ExternalModelError
+from ..geo import GeoResearchClient, GeoResearchError
 from ..llm import ModelAPIError, OpenAICompatibleClient, ProtocolError, parse_json_action
 from ..llm.client import settings_from_model_config
 from ..llm.protocol import action_from_tool_call
@@ -145,6 +146,19 @@ _GENERIC_IDENTITY_QUALIFIER = re.compile(
     r"\b(?:who|that|which|likely|possibly|probably|specific|unnamed|implied|candidate)\b",
     flags=re.I,
 )
+_GEO_DISTANCE_CLUE = re.compile(
+    r"\b\d+(?:\.\d+)?\s*(?:miles?|mi\.?|kilometers?|kilometres?|km|meters?|metres?|m)\b",
+    flags=re.I,
+)
+_GEO_RELATION_CLUE = re.compile(
+    r"\b(?:walk|walking|drive|driving|distance|located|location|nearby|nearest|from)\b",
+    flags=re.I,
+)
+_GEO_ENTITY_QUESTION = re.compile(
+    r"\b(?:restaurant|hotel|motel|store|shop|business|company|chain|venue|attraction|"
+    r"establishment|place)\b",
+    flags=re.I,
+)
 
 
 class AgentRunner:
@@ -156,6 +170,7 @@ class AgentRunner:
         search_provider: SearchProvider,
         page_fetcher: PageFetcher,
         model_client: OpenAICompatibleClient | None = None,
+        geo_research: GeoResearchClient | None = None,
         external_model_config: ExternalModelConfig | None = None,
         external_model_broker: ExternalModelBroker | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -169,6 +184,8 @@ class AgentRunner:
             settings_from_model_config(model_config)
         )
         self._owns_client = model_client is None
+        self.geo = geo_research
+        self._owns_geo = geo_research is None
         self.external_model_config = external_model_config or ExternalModelConfig()
         self.external_model = external_model_broker
         self.event_sink = event_sink
@@ -179,6 +196,15 @@ class AgentRunner:
     async def close(self) -> None:
         if self._owns_client:
             await self.client.close()
+        if self.geo is not None and self._owns_geo:
+            await self.geo.close()
+
+    def _geo_client(self) -> GeoResearchClient:
+        if self.geo is None:
+            self.geo = GeoResearchClient(
+                self.browser_config.cache_path.with_name("geo-cache.sqlite3")
+            )
+        return self.geo
 
     def _emit(self, event: str, **values: Any) -> None:
         if self.event_sink is not None:
@@ -196,6 +222,7 @@ class AgentRunner:
         errors: list[str] = []
         notes: list[str] = []
         opened: dict[str, PageDocument] = {}
+        geo_evidence: list[dict[str, Any]] = []
         search_calls = page_opens = find_calls = retrieved_chars = external_model_calls = 0
         parse_failures = 0
         protocol = self.model_config.protocol
@@ -673,6 +700,47 @@ class AgentRunner:
                         violations=answer_type_errors,
                     )
                     continue
+                geo_errors = self._geo_final_constraint_errors(
+                    question,
+                    str(action.payload.get("exact_answer") or ""),
+                    geo_evidence,
+                )
+                if geo_errors:
+                    correction = (
+                        "Final answer has unverified geospatial constraints: "
+                        + "; ".join(geo_errors)
+                        + ". Use geo_search on the stated landmarks or addresses, compare the "
+                        "nearby entities and pedestrian distances, then continue."
+                    )
+                    errors.append(correction)
+                    raw_tool_calls = assistant_message.get("tool_calls")
+                    if (
+                        protocol in {"tools", "auto"}
+                        and isinstance(raw_tool_calls, list)
+                        and raw_tool_calls
+                    ):
+                        messages.append(assistant_message)
+                        rejected_tool_call = raw_tool_calls[0]
+                        correction_message = {
+                            "role": "tool",
+                            "tool_call_id": rejected_tool_call.get("id", f"call-{step}"),
+                            "name": str(
+                                (rejected_tool_call.get("function") or {}).get("name") or "final"
+                            ),
+                            "content": canonical_json({"ok": False, "error": correction}),
+                        }
+                    else:
+                        messages.append({"role": "assistant", "content": response.content})
+                        correction_message = {"role": "user", "content": correction}
+                    messages.append(correction_message)
+                    transcript.append(correction_message)
+                    chain_delta_messages = [correction_message]
+                    self._emit(
+                        "geo_verification_final_rejected",
+                        step=step,
+                        violations=geo_errors,
+                    )
+                    continue
                 if self.agent_config.require_opened_citation_support:
                     evidence_errors = self._final_evidence_constraint_errors(
                         question,
@@ -867,10 +935,16 @@ class AgentRunner:
                             rescue_action.payload.get("citations") or [],
                             opened,
                         )
-                    if answer_errors or evidence_errors:
+                    geo_errors = self._geo_final_constraint_errors(
+                        question,
+                        str(rescue_action.payload.get("exact_answer") or ""),
+                        geo_evidence,
+                    )
+                    if answer_errors or evidence_errors or geo_errors:
                         violations = [
                             *(f"answer constraint: {error}" for error in answer_errors),
                             *(f"evidence constraint: {error}" for error in evidence_errors),
+                            *(f"geospatial constraint: {error}" for error in geo_errors),
                         ]
                         pending_surface_constraint_correction = (
                             "The independent finalizer proposed an answer that fails the same "
@@ -885,6 +959,7 @@ class AgentRunner:
                             "error": pending_surface_constraint_correction,
                             "answer_constraint_violations": answer_errors,
                             "evidence_constraint_violations": evidence_errors,
+                            "geo_constraint_violations": geo_errors,
                         }
                         rescue_action = None
                         self._emit(
@@ -1017,6 +1092,8 @@ class AgentRunner:
                         notes,
                         request_namespace=external_namespace,
                     )
+                    if action.action == "geo_search" and result.get("ok"):
+                        geo_evidence.append(result)
                     if action.action in {"search", "search_many"}:
                         result = self._filter_query_mirror_search_results(question, result)
                         search_query_history.extend(self._search_queries(action))
@@ -1462,6 +1539,7 @@ class AgentRunner:
                 SearchError,
                 BrowserError,
                 ExternalModelError,
+                GeoResearchError,
                 ValueError,
                 RuntimeError,
             ) as exc:
@@ -1489,7 +1567,7 @@ class AgentRunner:
                     result["next_action_requirement"] = (
                         "Do not repeat the search. Open a candidate URL or finalize from existing evidence."
                     )
-            elif action.action in {"open", "open_many"} and result.get("ok"):
+            elif action.action in {"open", "open_many", "geo_search"} and result.get("ok"):
                 require_open = False
                 search_streak = 0
 
@@ -1846,6 +1924,12 @@ class AgentRunner:
                     "Treat constrained related entities as search anchors: when the target is "
                     "unknown, identify the rarest collaborator, author, spouse, artifact, event, "
                     "quotation, or dated source first and traverse that relation back to the target. "
+                    "Translate scholarly paraphrases into field vocabulary (for example curated "
+                    "database, experimentally validated, catalog, registry, corpus, revision, or "
+                    "open-access paper), then enumerate authors and test them against the other "
+                    "relations. A publication matching only one clue is candidate generation, not "
+                    "identity proof. For multi-anchor distance clues, use geo_search with the "
+                    "stated expected distances instead of search snippets or city-level pages. "
                     "Do not infer nationality from birthplace or primary occupation from one artifact. "
                     "For a historical attribution, put a broad subject history or origins query "
                     "first; do not lead with answer-shaped wording such as 'first person credited.' "
@@ -1883,6 +1967,7 @@ class AgentRunner:
         key = {
             "search_many": "queries",
             "open_many": "urls",
+            "geo_search": "anchors",
             "ask_external_model": "requests",
         }.get(action.action)
         values = action.payload.get(key) if key else None
@@ -1899,6 +1984,10 @@ class AgentRunner:
         budget_shapes = {
             "search_many": (
                 "queries",
+                max(0, self.agent_config.max_search_calls - search_calls),
+            ),
+            "geo_search": (
+                "anchors",
                 max(0, self.agent_config.max_search_calls - search_calls),
             ),
             "open_many": (
@@ -1942,6 +2031,8 @@ class AgentRunner:
                 len(action.payload.get("queries") or []),
                 self.agent_config.max_batch_size,
             )
+        elif action.action == "geo_search":
+            search_delta = min(len(action.payload.get("anchors") or []), 4)
         elif action.action == "open":
             page_delta = 1
         elif action.action == "open_many":
@@ -2498,7 +2589,11 @@ class AgentRunner:
                 "organizing, or beneficiary geography for the candidate's origin. Treat hard clues "
                 "as a conjunction: one material contradiction eliminates a candidate unless a "
                 "reliable source conflict is explicitly resolved. Return the narrowest exact value "
-                "supported by the source, never a generic hypernym for a known specific answer.",
+                "supported by the source, never a generic hypernym for a known specific answer. "
+                "For scholarly clues, translate the paraphrase into field terminology, identify "
+                "the publication independently, enumerate its authors, and verify every remaining "
+                "author relation. For multiple distance constraints, use geo_search with expected "
+                "distances and compare shared candidates by route error.",
             ),
             (
                 "Comparative adversarial auditor",
@@ -2509,7 +2604,10 @@ class AgentRunner:
                 "Classify each objection as contradiction, unresolved evidence, source-quality "
                 "concern, identity mismatch, or answer-type mismatch. Source silence is not "
                 "disproof, and skepticism has no veto. Compare alternatives and return the single "
-                "best concrete answer as a final JSON action.",
+                "best concrete answer as a final JSON action. Reject explanations that use likely, "
+                "associated with, or similar hedges to substitute for a hard relation. For route-"
+                "distance questions, independently verify that the selected place appears in the "
+                "cross-anchor geo evidence rather than merely existing in the same city.",
             ),
         ]
         review_count = min(len(review_roles), max(0, request_budget - 1))
@@ -2526,6 +2624,9 @@ class AgentRunner:
                     "Before accepting a source, verify that multiple independent anchors identify "
                     "the same underlying event, entity, or publication; reject coincidental pages "
                     "that share only the requested phrase or answer type. "
+                    "A paper matching one technical clue does not identify an author until the "
+                    "remaining author relations are directly tested. Multiple route-distance clues "
+                    "require geo_search evidence with their expected distances. "
                     "This is a forced-answer task: return exactly one final JSON action with a "
                     "concrete answer of the requested type. Unresolved evidence lowers confidence "
                     "but never permits an abstention or meta-answer. Before finalizing, use public "
@@ -2820,6 +2921,7 @@ class AgentRunner:
         if not normalized_answer:
             return ["the proposed exact answer has no searchable content"]
         require_literal_hashtag = answer.strip().startswith("#")
+        supporting_documents: list[PageDocument] = []
         for document in cited_documents:
             page = {
                 "title": document.title,
@@ -2835,10 +2937,83 @@ class AgentRunner:
                 else normalized_answer in normalized_evidence
             )
             if answer_present and cls._page_matches_question(question, page):
-                return []
+                supporting_documents.append(document)
+        minimum_support = cls._minimum_answer_supporting_documents(question)
+        if len(supporting_documents) >= minimum_support:
+            return []
+        if supporting_documents:
+            return [
+                "a multi-hop question requires at least "
+                f"{minimum_support} independently opened answer-naming sources, but only "
+                f"{len(supporting_documents)} was supplied"
+            ]
         return [
             "no cited, inspected page both names the proposed exact answer and materially "
             "matches the question"
+        ]
+
+    @staticmethod
+    def _minimum_answer_supporting_documents(question: str) -> int:
+        sentences = [item for item in re.split(r"[.!?]+", question) if item.strip()]
+        years = set(re.findall(r"\b(?:18|19|20)\d{2}\b", question))
+        distance_clues = _GEO_DISTANCE_CLUE.findall(question)
+        is_multi_hop = len(question) >= 280 and (
+            len(sentences) >= 3 or len(years) >= 2 or len(distance_clues) >= 2
+        )
+        return 2 if is_multi_hop else 1
+
+    @staticmethod
+    def _geo_final_constraint_errors(
+        question: str,
+        answer: str,
+        geo_evidence: list[dict[str, Any]],
+    ) -> list[str]:
+        distance_clues = _GEO_DISTANCE_CLUE.findall(question)
+        if len(distance_clues) < 2 or not _GEO_RELATION_CLUE.search(question):
+            return []
+        valid_evidence = [
+            item
+            for item in geo_evidence
+            if item.get("ok") and isinstance(item.get("anchors"), list)
+        ]
+        if not valid_evidence:
+            return [
+                "the question contains multiple distance or proximity constraints, but no "
+                "successful deterministic geo_search was performed"
+            ]
+        required_expected = min(len(distance_clues), 2)
+        evidence_with_expected = [
+            item
+            for item in valid_evidence
+            if sum(
+                anchor.get("expected_distance_miles") is not None
+                for anchor in item["anchors"]
+                if isinstance(anchor, dict) and anchor.get("ok")
+            )
+            >= required_expected
+        ]
+        if not evidence_with_expected:
+            return [
+                "geo_search did not encode at least two stated distances as "
+                "expected_distance_miles, so it cannot rank candidates against the clues"
+            ]
+        if not _GEO_ENTITY_QUESTION.search(question):
+            return []
+        normalized_answer = AgentRunner._normalize_consensus_answer(answer)
+        for evidence in evidence_with_expected:
+            for entity in evidence.get("shared_entities") or []:
+                normalized_label = AgentRunner._normalize_consensus_answer(
+                    str(entity.get("label") or "")
+                )
+                if not normalized_label:
+                    continue
+                if (
+                    normalized_label in normalized_answer or normalized_answer in normalized_label
+                ) and int(entity.get("expected_distance_anchor_count") or 0) >= required_expected:
+                    return []
+        return [
+            "the proposed place or business is not a shared geo_search candidate with routed "
+            "distance evidence for at least two stated anchors"
         ]
 
     @staticmethod
@@ -3185,6 +3360,17 @@ class AgentRunner:
                 "failed": len(queries) - successes,
                 "searches": output,
             }, (len(queries), 0, 0, chars)
+
+        if action.action == "geo_search":
+            anchors = [dict(item) for item in payload["anchors"]][:4]
+            result = await self._geo_client().explore(
+                anchors,
+                category=str(payload.get("category") or "named_place"),
+                max_results=int(payload.get("max_results") or 50),
+                include_walking_routes=bool(payload.get("include_walking_routes", True)),
+            )
+            chars = len(canonical_json(result))
+            return result, (len(anchors), 0, 0, chars)
 
         if action.action == "open":
             url = str(payload["url"])

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from browsecomp250.llm.protocol import ProtocolError, action_from_tool_call, parse_json_action
@@ -32,6 +34,27 @@ def test_external_model_requires_exactly_one_request_shape() -> None:
     with pytest.raises(ProtocolError, match="exactly one"):
         parse_json_action(
             '{"action":"ask_external_model","query":"q","requests":[{"query":"other"}]}'
+        )
+
+
+def test_parse_geo_search_with_expected_distances() -> None:
+    action = parse_json_action(
+        '{"action":"geo_search","anchors":['
+        '{"query":"First landmark","radius_m":5000,"expected_distance_miles":1.2},'
+        '{"query":"Second landmark","expected_distance_miles":2.4}],'
+        '"category":"restaurant"}'
+    )
+
+    assert action.action == "geo_search"
+    assert action.payload["anchors"][1]["expected_distance_miles"] == 2.4
+
+
+@pytest.mark.parametrize("distance", [-1, 501, "one mile", True])
+def test_geo_search_rejects_invalid_expected_distance(distance: object) -> None:
+    with pytest.raises(ProtocolError, match="expected_distance_miles"):
+        parse_json_action(
+            '{"action":"geo_search","anchors":'
+            f'[{{"query":"landmark","expected_distance_miles":{json.dumps(distance)}}}]}}'
         )
 
 

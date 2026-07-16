@@ -110,6 +110,65 @@ def tool_schemas(*, include_external_model: bool = True) -> list[dict[str, Any]]
             ["url", "pattern"],
         ),
         tool(
+            "geo_search",
+            (
+                "Geocode up to four landmarks or addresses, enumerate nearby named places from "
+                "OpenStreetMap, and estimate pedestrian route distances. Use this instead of "
+                "guessing when a question depends on proximity, walking distance, or matching "
+                "the same business across locations."
+            ),
+            {
+                "anchors": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "minLength": 1},
+                            "radius_m": {
+                                "type": "integer",
+                                "minimum": 100,
+                                "maximum": 25000,
+                                "default": 5000,
+                            },
+                            "expected_distance_miles": {
+                                "type": "number",
+                                "minimum": 0,
+                                "maximum": 500,
+                                "description": (
+                                    "Route distance stated for this anchor, converted to miles. "
+                                    "Supply it whenever the question gives a distance."
+                                ),
+                            },
+                        },
+                        "required": ["query"],
+                        "additionalProperties": False,
+                    },
+                },
+                "category": {
+                    "type": "string",
+                    "enum": [
+                        "restaurant",
+                        "food",
+                        "lodging",
+                        "retail",
+                        "attraction",
+                        "named_place",
+                    ],
+                    "default": "named_place",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "default": 50,
+                },
+                "include_walking_routes": {"type": "boolean", "default": True},
+            },
+            ["anchors"],
+        ),
+        tool(
             "ask_external_model",
             (
                 "Ask an independent external model for difficult reasoning, current facts, or "

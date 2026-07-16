@@ -150,6 +150,16 @@ class AgentExternalModelBroker:
                 "dated source and traverse that relation back to candidate targets."
             ),
             (
+                "Translate paraphrased scholarly clues into field terminology such as curated "
+                "database, experimentally validated, catalog, registry, revision, corpus, or "
+                "open-access paper. Treat a paper matching only one clue as candidate generation, "
+                "enumerate its authors, and test each author against every remaining relation. "
+                "Never bridge a hard clue with words such as likely, associated with, or a "
+                "specific. For questions with multiple proximity or route-distance constraints, "
+                "use geo_search, supply each stated distance as expected_distance_miles, and rank "
+                "shared candidates by routed distance error before selecting an answer."
+            ),
+            (
                 "Complete through the final tool. Put the full requested deliverable in final."
                 "explanation; if the request specifies JSON, place that exact JSON object in the "
                 "explanation with no surrounding markdown. Put only a concise recommendation in "
@@ -217,6 +227,16 @@ class AgentExternalModelBroker:
                 "error": f"{type(exc).__name__}: {exc}",
                 "agent_events": len(events),
             }
+        finally:
+            close_runner = getattr(runner, "close", None)
+            if callable(close_runner):
+                try:
+                    await close_runner()
+                except Exception as exc:  # noqa: BLE001 - cleanup must not erase helper evidence
+                    print(
+                        f"[bc250-helper] namespace={namespace} cleanup_error={type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
         return self._result_from_outcome(request, outcome, namespace=namespace, events=events)
 
     def _partial_timeout_result(
