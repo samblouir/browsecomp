@@ -146,7 +146,7 @@ The `headline` command refuses configurations that weaken major minimum budgets,
 - Tavily Search API
 - Serper
 - SearXNG
-- Server-side Yahoo organic search (no user browser or API key)
+- Server-side Yahoo organic search, locally or through an authorized SSH egress host
 
 All providers are normalized to the same internal result schema. The OpenRouter
 Exa carrier's generated prose is discarded; only URL-citation annotations are

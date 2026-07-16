@@ -65,6 +65,11 @@ and cost counters are retained in the run manifest. If a campaign changes
 providers because of an upstream outage, its final report must preserve per-row
 provenance and present the resulting provider strata separately.
 
+`yahoo_ssh` runs the same server-rendered Yahoo adapter through an explicitly
+configured SSH host. It never opens or controls the user's browser. The provider,
+host, pacing, and concurrency are frozen in the run lock, so remote-egress rows
+remain a separately auditable search stratum.
+
 ## External consultation
 
 `ask_external_model` is a caller-owned native tool in this evaluator. The Star

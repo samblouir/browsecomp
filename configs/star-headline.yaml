@@ -78,6 +78,10 @@ search:
   yahoo_max_concurrency: ${BC250_YAHOO_MAX_CONCURRENCY:-3}
   yahoo_min_interval_seconds: ${BC250_YAHOO_MIN_INTERVAL_SECONDS:-0.35}
   yahoo_error_cooldown_seconds: ${BC250_YAHOO_ERROR_COOLDOWN_SECONDS:-3.0}
+  yahoo_ssh_host: "${BC250_YAHOO_SSH_HOST:-sam-mbp-rev}"
+  yahoo_ssh_bin: "${BC250_YAHOO_SSH_BIN:-ssh}"
+  yahoo_ssh_remote_curl_bin: "${BC250_YAHOO_SSH_REMOTE_CURL_BIN:-curl}"
+  yahoo_ssh_connect_timeout_seconds: ${BC250_YAHOO_SSH_CONNECT_TIMEOUT_SECONDS:-8}
   hybrid_mode: merge
 
 browser:

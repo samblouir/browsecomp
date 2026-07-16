@@ -123,6 +123,7 @@ class SearchConfig(StrictConfigModel):
         "searxng",
         "yahoo",
         "yahoo_jina",
+        "yahoo_ssh",
     ] = "brave"
     results_per_call: int = Field(default=10, ge=1, le=20)
     country: str = "US"
@@ -160,6 +161,10 @@ class SearchConfig(StrictConfigModel):
     yahoo_max_concurrency: int = Field(default=3, ge=1, le=8)
     yahoo_min_interval_seconds: float = Field(default=0.35, ge=0, le=10)
     yahoo_error_cooldown_seconds: float = Field(default=3.0, ge=0, le=60)
+    yahoo_ssh_host: str = ""
+    yahoo_ssh_bin: str = "ssh"
+    yahoo_ssh_remote_curl_bin: str = "curl"
+    yahoo_ssh_connect_timeout_seconds: int = Field(default=8, ge=1, le=60)
     hybrid_mode: Literal["merge", "google_first", "brave_first"] = "merge"
 
     @field_validator("live_preflight_query")
@@ -181,6 +186,7 @@ class SearchConfig(StrictConfigModel):
             "searxng": "",
             "yahoo": "",
             "yahoo_jina": "",
+            "yahoo_ssh": "",
         }[self.provider]
 
     def requires_api_key(self) -> bool:

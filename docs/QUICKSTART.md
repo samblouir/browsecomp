@@ -133,6 +133,17 @@ Yahoo redirect URLs before exposing them to the agent. It does not launch or
 control a user's browser. Treat it as a distinct provider in protocol locks and
 result reports; do not mix its rows into a Brave-only headline claim.
 
+If the evaluator host's public IP cannot reach Yahoo, use an authorized SSH
+egress host without launching a browser:
+
+```dotenv
+BC250_SEARCH_PROVIDER=yahoo_ssh
+BC250_YAHOO_SSH_HOST=sam-mbp-rev
+```
+
+The adapter executes bounded, paced `curl` requests over SSH and parses the same
+organic-result HTML locally. The provider and host are recorded in the run lock.
+
 ## 5. Configure grading
 
 The smoke profile uses the deterministic diagnostic grader. The headline profile requires the semantic LLM grader.

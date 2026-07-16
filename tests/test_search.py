@@ -15,6 +15,7 @@ from browsecomp250.search.searxng import SearXNGSearchProvider
 from browsecomp250.search.tavily import TavilySearchProvider
 from browsecomp250.search.yahoo import YahooSearchProvider
 from browsecomp250.search.yahoo_jina import YahooJinaSearchProvider
+from browsecomp250.search.yahoo_ssh import YahooSSHSearchProvider
 from browsecomp250.types import SearchResult
 
 
@@ -487,6 +488,55 @@ async def test_yahoo_adapter_bounds_concurrency_and_cleans_control_tokens(
     assert maximum_active == 2
     assert all("<|" not in query for query in queries)
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_yahoo_ssh_adapter_uses_bounded_remote_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    document = b"""\
+<div id="web"><ol class="searchCenterMiddle">
+  <li><div class="algo-sr">
+    <div class="compTitle"><a href="https://example.test/result"><h3>Result</h3></a></div>
+    <div class="compText">Evidence.</div>
+  </div></li>
+</ol></div>
+"""
+    captured: tuple[object, ...] = ()
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return document, b""
+
+    async def create_subprocess_exec(*args: object, **kwargs: object) -> FakeProcess:
+        nonlocal captured
+        captured = args
+        assert kwargs["stdout"] == asyncio.subprocess.PIPE
+        assert kwargs["stderr"] == asyncio.subprocess.PIPE
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create_subprocess_exec)
+    provider = YahooSSHSearchProvider(
+        SearchConfig(
+            provider="yahoo_ssh",
+            yahoo_ssh_host="remote.test",
+            yahoo_min_interval_seconds=0,
+            cache_mode="off",
+            cache_path=tmp_path / "cache.sqlite3",
+        )
+    )
+
+    results = await provider.search("exact <|channel|> phrase; touch /tmp/no", count=1)
+
+    assert results[0].url == "https://example.test/result"
+    assert "remote.test" in captured
+    remote_command = str(captured[-1])
+    assert "<|channel|>" not in remote_command
+    assert "phrase%3B+touch+%2Ftmp%2Fno" in remote_command
+    assert "'Accept: text/html,application/xhtml+xml'" in remote_command
+    await provider.close()
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ from .serper import SerperSearchProvider
 from .tavily import TavilySearchProvider
 from .yahoo import YahooSearchProvider
 from .yahoo_jina import YahooJinaSearchProvider
+from .yahoo_ssh import YahooSSHSearchProvider
 
 
 def create_search_provider(
@@ -28,6 +29,7 @@ def create_search_provider(
         "searxng": SearXNGSearchProvider,
         "yahoo": YahooSearchProvider,
         "yahoo_jina": YahooJinaSearchProvider,
+        "yahoo_ssh": YahooSSHSearchProvider,
     }
     return providers[config.provider](config, client=client)
 

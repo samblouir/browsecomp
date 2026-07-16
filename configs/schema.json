@@ -797,7 +797,8 @@
             "serper",
             "searxng",
             "yahoo",
-            "yahoo_jina"
+            "yahoo_jina",
+            "yahoo_ssh"
           ],
           "title": "Provider",
           "type": "string"
@@ -1024,6 +1025,28 @@
           "minimum": 0,
           "title": "Yahoo Error Cooldown Seconds",
           "type": "number"
+        },
+        "yahoo_ssh_host": {
+          "default": "",
+          "title": "Yahoo Ssh Host",
+          "type": "string"
+        },
+        "yahoo_ssh_bin": {
+          "default": "ssh",
+          "title": "Yahoo Ssh Bin",
+          "type": "string"
+        },
+        "yahoo_ssh_remote_curl_bin": {
+          "default": "curl",
+          "title": "Yahoo Ssh Remote Curl Bin",
+          "type": "string"
+        },
+        "yahoo_ssh_connect_timeout_seconds": {
+          "default": 8,
+          "maximum": 60,
+          "minimum": 1,
+          "title": "Yahoo Ssh Connect Timeout Seconds",
+          "type": "integer"
         },
         "hybrid_mode": {
           "default": "merge",

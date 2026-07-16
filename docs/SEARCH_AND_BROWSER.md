@@ -118,6 +118,11 @@ fanout smokes are required before a campaign starts.
 reader. Anonymous reader rate limits make it unsuitable as the primary provider
 for a concurrent headline campaign.
 
+`yahoo_ssh` uses the direct Yahoo parser through an explicitly authorized SSH
+egress host. It does not open Chrome or create a managed browser profile. SSH
+connect limits, remote request limits, response-size limits, pacing, and
+concurrency are enforced by the adapter and recorded in the protocol lock.
+
 The Star smoke, development, and headline profiles default to `brave` but honor
 an explicit `BC250_SEARCH_PROVIDER` override. The resolved provider is frozen in
 the run lock. Any provider change within a larger development campaign must be
