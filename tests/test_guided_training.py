@@ -17,7 +17,11 @@ from browsecomp250.question_planning import (
     compile_question_discovery_profile,
     infer_answer_contract,
 )
-from scripts.run_full_guided_training import guided_request_namespace, worker_resources
+from scripts.run_full_guided_training import (
+    guided_request_namespace,
+    probe_search_transport,
+    worker_resources,
+)
 
 
 def _records(*, sources: bool = True):
@@ -366,6 +370,45 @@ async def test_guided_parent_owns_blocking_final_gate_while_helpers_return_cited
         assert resources.config.external_model.agent_max_history_chars == 180_000
     finally:
         await resources.close()
+
+
+@pytest.mark.asyncio
+async def test_full_guided_launcher_probes_live_search_before_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeSearchProvider:
+        name = "fake_public_search"
+
+        def __init__(self):
+            self.closed = False
+
+        async def probe_live(self, query=None, count=1):
+            del query, count
+            return [object(), object()]
+
+        def audit_metrics(self):
+            return {"live": True}
+
+        async def close(self):
+            self.closed = True
+
+    provider = FakeSearchProvider()
+    monkeypatch.setattr(
+        "scripts.run_full_guided_training.create_search_provider",
+        lambda config: provider,
+    )
+    config = load_config(Path("configs/star-headline.yaml"))
+    config.search.cache_path = tmp_path / "search.sqlite3"
+
+    result = await probe_search_transport(config)
+
+    assert result == {
+        "provider": "fake_public_search",
+        "result_count": 2,
+        "audit": {"live": True},
+    }
+    assert provider.closed is True
 
 
 def test_compiler_adds_geo_verification_for_multiple_distance_constraints() -> None:

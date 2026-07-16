@@ -949,3 +949,61 @@ async def test_bing_yahoo_disables_engine_that_fails_live_preflight(tmp_path: Pa
     assert all(isinstance(batch, list) and batch[0].source == "bing_ssh" for batch in batches)
     assert provider.audit_metrics()["engines"]["yahoo"]["enabled"] is False
     await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_bing_yahoo_retries_failed_engine_after_cooldown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RecoveringEngine:
+        def __init__(self, source: str):
+            self.source = source
+            self.calls = 0
+
+        async def search_many(self, queries, count=None, offset=0):
+            del count, offset
+            self.calls += 1
+            if self.calls == 1:
+                return [SearchError("temporary tunnel failure") for _ in queries]
+            return [
+                [
+                    SearchResult(
+                        title=self.source,
+                        url=f"https://example.test/{self.source}",
+                        source=self.source,
+                    )
+                ]
+                for _ in queries
+            ]
+
+        async def close(self):
+            return None
+
+    now = 100.0
+    monkeypatch.setattr("browsecomp250.search.bing_yahoo_ssh.time.monotonic", lambda: now)
+    provider = BingYahooSSHSearchProvider(
+        SearchConfig(
+            provider="bing_yahoo_ssh",
+            cache_mode="off",
+            cache_path=tmp_path / "meta.sqlite3",
+            bing_ssh_error_cooldown_seconds=1,
+            yahoo_error_cooldown_seconds=1,
+        )
+    )
+    bing = RecoveringEngine("bing_ssh")
+    yahoo = RecoveringEngine("yahoo_ssh")
+    provider.bing = bing
+    provider.yahoo = yahoo
+
+    failed = await provider.search_many(["one"], count=10)
+    immediate = await provider.search_many(["two"], count=10)
+    now = 102.0
+    recovered = await provider.search_many(["three"], count=10)
+
+    assert isinstance(failed[0], SearchError)
+    assert isinstance(immediate[0], SearchError)
+    assert [row.source for row in recovered[0]] == ["bing_ssh", "yahoo_ssh"]
+    assert bing.calls == 2
+    assert yahoo.calls == 2
+    await provider.close()

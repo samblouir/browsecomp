@@ -541,6 +541,21 @@ def worker_resources(
     )
 
 
+async def probe_search_transport(base_config: AppConfig) -> dict[str, Any]:
+    """Fail before item execution when the configured live search path is unavailable."""
+
+    provider = create_search_provider(base_config.search)
+    try:
+        results = await provider.probe_live(count=2)
+        return {
+            "provider": provider.name,
+            "result_count": len(results),
+            "audit": provider.audit_metrics(),
+        }
+    finally:
+        await provider.close()
+
+
 async def probe_endpoint(endpoint: str, model: str, base_config: AppConfig) -> None:
     config = base_config.model.model_copy(
         deep=True,
@@ -826,6 +841,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     if concurrency <= 0:
         raise ValueError("No selected work or Star-7 endpoint")
 
+    preflight["search_transport"] = await probe_search_transport(base_config)
     for endpoint in star7_endpoints[:concurrency]:
         await probe_endpoint(endpoint, "frontierrl/star-7", base_config)
     for endpoint in sorted(set(star2_endpoints[index % len(star2_endpoints)] for index in range(concurrency))):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -25,13 +26,18 @@ class BingYahooSSHSearchProvider(SearchProvider):
         self.bing = BingSSHSearchProvider(child_config, client=self.client)
         self.yahoo = YahooSSHSearchProvider(child_config, client=self.client)
         self._disabled_engines: dict[str, str] = {}
+        self._disabled_until: dict[str, float] = {}
 
     def audit_metrics(self) -> dict[str, object]:
         return {
             "engines": {
                 name: {
-                    "enabled": name not in self._disabled_engines,
-                    "disabled_reason": self._disabled_engines.get(name, ""),
+                    "enabled": not self._is_temporarily_disabled(name),
+                    "disabled_reason": (
+                        self._disabled_engines.get(name, "")
+                        if self._is_temporarily_disabled(name)
+                        else ""
+                    ),
                 }
                 for name in ("bing", "yahoo")
             }
@@ -93,10 +99,12 @@ class BingYahooSSHSearchProvider(SearchProvider):
         names = []
         disabled_results: dict[str, SearchError] = {}
         for name, call in (("bing", bing_call), ("yahoo", yahoo_call)):
-            if name in self._disabled_engines:
+            if self._is_temporarily_disabled(name):
                 call.close()
                 disabled_results[name] = self._disabled_error(name)
                 continue
+            self._disabled_engines.pop(name, None)
+            self._disabled_until.pop(name, None)
             names.append(name)
             calls.append(call)
         completed = await asyncio.gather(*calls, return_exceptions=True)
@@ -110,7 +118,7 @@ class BingYahooSSHSearchProvider(SearchProvider):
         result: list[SearchResult] | BaseException,
     ) -> None:
         if isinstance(result, BaseException):
-            self._disabled_engines[name] = self._error_summary(result)
+            self._disable_engine(name, result)
 
     def _record_single_health(
         self,
@@ -118,7 +126,7 @@ class BingYahooSSHSearchProvider(SearchProvider):
         result: list[SearchResult] | BaseException,
     ) -> None:
         if isinstance(result, BaseException):
-            self._disabled_engines.setdefault(name, self._error_summary(result))
+            self._disable_engine(name, result)
 
     def _normalize_batches(
         self,
@@ -127,12 +135,24 @@ class BingYahooSSHSearchProvider(SearchProvider):
         count: int,
     ) -> list[list[SearchResult] | Exception]:
         if isinstance(result, BaseException):
-            self._disabled_engines.setdefault(name, self._error_summary(result))
+            self._disable_engine(name, result)
             return [self._disabled_error(name) for _ in range(count)]
         if result and all(isinstance(batch, Exception) for batch in result):
             first = next(batch for batch in result if isinstance(batch, Exception))
-            self._disabled_engines.setdefault(name, self._error_summary(first))
+            self._disable_engine(name, first)
         return result
+
+    def _disable_engine(self, name: str, error: BaseException) -> None:
+        cooldown = (
+            self.config.bing_ssh_error_cooldown_seconds
+            if name == "bing"
+            else self.config.yahoo_error_cooldown_seconds
+        )
+        self._disabled_engines[name] = self._error_summary(error)
+        self._disabled_until[name] = time.monotonic() + max(1.0, cooldown)
+
+    def _is_temporarily_disabled(self, name: str) -> bool:
+        return self._disabled_until.get(name, 0.0) > time.monotonic()
 
     def _disabled_error(self, name: str) -> SearchError:
         reason = self._disabled_engines.get(name, "engine unavailable")
