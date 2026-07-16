@@ -229,17 +229,36 @@ class BenchmarkEngine:
         ]
         if self.config.run.shuffle:
             random.Random(self.config.run.seed).shuffle(work)
-        completed = self.storage.completed_keys() if self.config.run.resume else set()
+        existing_records = self.storage.load_records() if self.config.run.resume else []
+        existing_by_key = {
+            (str(row["item_id"]), int(row["attempt"])): row for row in existing_records
+        }
+        completed = set(existing_by_key)
         work = [
             (item, attempt) for item, attempt in work if (item.item_id, attempt) not in completed
         ]
 
+        assigned = len(items) * self.config.run.attempts
+        initial_correct = sum(row.get("correct") is True for row in existing_by_key.values())
+        initial_finished = len(completed)
+        initial_incorrect = initial_finished - initial_correct
+        initial_failed = sum(row.get("status") != "completed" for row in existing_by_key.values())
+
         self.storage.update_status(
             state="running",
-            total_planned=len(items) * self.config.run.attempts,
+            total_planned=assigned,
+            assigned=assigned,
             already_completed=len(completed),
-            completed=len(completed),
-            failed=0,
+            completed=initial_finished,
+            finished=initial_finished,
+            correct=initial_correct,
+            incorrect=initial_incorrect,
+            failed=initial_failed,
+            pending=assigned - initial_finished,
+            accuracy_among_finished=(
+                initial_correct / initial_finished if initial_finished else None
+            ),
+            correct_fraction_of_assigned=(initial_correct / assigned if assigned else None),
             remaining=len(work),
             active_trials={},
             started_at=utc_now_iso(),
@@ -266,16 +285,26 @@ class BenchmarkEngine:
         ]
         failures: list[str] = []
         active_trials: dict[str, dict[str, Any]] = {}
-        progress = {"completed": len(completed), "failed": 0}
+        progress = {
+            "finished": initial_finished,
+            "correct": initial_correct,
+            "incorrect": initial_incorrect,
+            "failed": initial_failed,
+        }
 
         def publish_status(*, last_event: dict[str, Any] | None = None) -> None:
+            finished = progress["finished"]
             self.storage.update_status(
-                completed=progress["completed"],
+                assigned=assigned,
+                completed=finished,
+                finished=finished,
+                correct=progress["correct"],
+                incorrect=progress["incorrect"],
                 failed=progress["failed"],
-                remaining=max(
-                    0,
-                    len(items) * self.config.run.attempts - progress["completed"],
-                ),
+                pending=max(0, assigned - finished),
+                remaining=max(0, assigned - finished),
+                accuracy_among_finished=(progress["correct"] / finished if finished else None),
+                correct_fraction_of_assigned=(progress["correct"] / assigned if assigned else None),
                 active_trials=dict(active_trials),
                 last_event=last_event,
             )
@@ -342,11 +371,17 @@ class BenchmarkEngine:
                         grader=grader,
                         event_sink=event_sink,
                     )
-                    progress["completed"] += 1
+                    progress["finished"] += 1
+                    if record.correct is True:
+                        progress["correct"] += 1
+                    else:
+                        progress["incorrect"] += 1
                     if record.status not in {"completed"}:
                         progress["failed"] += 1
                         failures.append(f"{trial_key}: status={record.status}")
                 except Exception as exc:  # noqa: BLE001
+                    progress["finished"] += 1
+                    progress["incorrect"] += 1
                     progress["failed"] += 1
                     failures.append(f"{trial_key}: {exc}")
                     if self.config.run.fail_fast:
@@ -373,9 +408,17 @@ class BenchmarkEngine:
             self.storage.update_status(
                 state="interrupted",
                 finished_at=utc_now_iso(),
-                completed=progress["completed"],
+                completed=progress["finished"],
+                finished=progress["finished"],
+                correct=progress["correct"],
+                incorrect=progress["incorrect"],
                 failed=progress["failed"],
-                remaining=max(0, len(work) - progress["completed"]),
+                pending=max(0, assigned - progress["finished"]),
+                remaining=max(0, assigned - progress["finished"]),
+                accuracy_among_finished=(
+                    progress["correct"] / progress["finished"] if progress["finished"] else None
+                ),
+                correct_fraction_of_assigned=(progress["correct"] / assigned if assigned else None),
                 active_trials={},
             )
             raise
@@ -418,9 +461,18 @@ class BenchmarkEngine:
             state="completed_with_errors" if failures else "completed",
             finished_at=utc_now_iso(),
             n_records=len(records),
-            completed=progress["completed"],
+            assigned=assigned,
+            completed=progress["finished"],
+            finished=progress["finished"],
+            correct=progress["correct"],
+            incorrect=progress["incorrect"],
             failed=progress["failed"],
+            pending=0,
             remaining=0,
+            accuracy_among_finished=(
+                progress["correct"] / progress["finished"] if progress["finished"] else None
+            ),
+            correct_fraction_of_assigned=(progress["correct"] / assigned if assigned else None),
             active_trials={},
             failures=failures,
             summary=summary,

@@ -132,6 +132,15 @@ async def test_engine_end_to_end_with_synthetic_dataset(monkeypatch, tmp_path: P
     assert (run_dir / "public" / "trials.csv").exists()
     assert len((run_dir / "private" / "trials.jsonl").read_text().splitlines()) == 2
     public_summary = json.loads((run_dir / "public" / "summary.json").read_text())
+    status = json.loads((run_dir / "status.json").read_text())
+    assert status["assigned"] == 2
+    assert status["finished"] == 2
+    assert status["correct"] == 2
+    assert status["incorrect"] == 0
+    assert status["failed"] == 0
+    assert status["pending"] == 0
+    assert status["accuracy_among_finished"] == 1.0
+    assert status["correct_fraction_of_assigned"] == 1.0
     assert public_summary["cost_breakdown_usd"]["model"] == pytest.approx(0.002)
     assert public_summary["cost_breakdown_usd"]["grader"] == pytest.approx(0.0002)
 
