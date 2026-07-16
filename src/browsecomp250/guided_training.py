@@ -131,8 +131,7 @@ def _requires_geo_verification(record: dict[str, Any]) -> bool:
             str(constraint.get(key) or "")
             for key in ("original_text", "normalized_claim", "verification_rule")
         )
-        if _GEO_CONSTRAINT.search(text):
-            matches += 1
+        matches += len(_GEO_CONSTRAINT.findall(text))
     return matches >= 2
 
 

@@ -207,6 +207,24 @@ def test_compiler_adds_geo_verification_for_multiple_distance_constraints() -> N
     assert steps.index(geo) < len(steps) - 1
 
 
+def test_compiler_detects_multiple_distances_inside_one_constraint() -> None:
+    route, full = _records(sources=False)
+    route["constraints"] = [
+        {
+            "constraint_id": "C01",
+            "original_text": (
+                "The target is 3 miles driving from a hotel and 40 meters from a station."
+            ),
+            "verification_rule": "Check both routes.",
+        }
+    ]
+    full["constraints"] = route["constraints"]
+
+    steps, _ = compile_guided_steps(route, full)
+
+    assert any(step["id"] == "geospatial_verification" for step in steps)
+
+
 def test_later_attempt_guidance_does_not_reveal_private_grading_feedback() -> None:
     route, full = _records()
     steps, review = compile_guided_steps(route, full, attempt=2)
