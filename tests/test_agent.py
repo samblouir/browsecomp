@@ -1051,9 +1051,33 @@ def test_external_consultation_urls_skip_opened_and_deduplicate() -> None:
     ]
     assert AgentRunner._external_consultation_urls(
         consultations,
+        question="Which independently documented person fits the historical clues?",
         opened=opened,
         limit=3,
     ) == ["https://source.test/a", "http://source.test/b"]
+
+
+def test_external_consultation_urls_reject_query_mirror_paths_without_domain_rules() -> None:
+    question = (
+        "Which artist born in England made an album for fun, had a debut album between "
+        "2001 and 2005, released albums with Roman numerals, and said they would never go "
+        "commercial or feel threatened?"
+    )
+    mirror = (
+        "https://spam.example/video/artist-born-in-england-made-an-album-for-fun-"
+        "debut-album-between-2001-and-2005-released-albums-with-roman-numerals-"
+        "would-never-go-commercial-do-not-feel-threatened/"
+    )
+    legitimate = "https://news.example/interviews/artist-profile-and-new-album"
+
+    assert AgentRunner._looks_like_query_mirror_url(question, mirror)
+    assert not AgentRunner._looks_like_query_mirror_url(question, legitimate)
+    assert AgentRunner._external_consultation_urls(
+        [{"content": f"Possible sources: {mirror} and {legitimate}"}],
+        question=question,
+        opened={},
+        limit=3,
+    ) == [legitimate]
 
 
 def test_forced_final_recovers_agent_backend_plain_content() -> None:

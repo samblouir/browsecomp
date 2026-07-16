@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from ..browser.extract import page_window
 from ..browser.fetcher import BrowserError, PageFetcher
@@ -1055,6 +1055,7 @@ class AgentRunner:
                     )
                     external_urls = self._external_consultation_urls(
                         consultations,
+                        question=question,
                         opened=opened,
                         limit=min(
                             self.agent_config.automatic_page_inspection_count,
@@ -1977,10 +1978,12 @@ class AgentRunner:
         candidates = cls._candidate_urls(result, 10_000)
         return [url for url in candidates if url not in opened_urls][:limit]
 
-    @staticmethod
+    @classmethod
     def _external_consultation_urls(
+        cls,
         consultations: list[dict[str, Any]],
         *,
+        question: str,
         opened: dict[str, PageDocument],
         limit: int,
     ) -> list[str]:
@@ -1991,13 +1994,25 @@ class AgentRunner:
         for consultation in consultations:
             for match in _PUBLIC_URL.finditer(str(consultation.get("content") or "")):
                 url = match.group(0).rstrip(".,;:")
-                if url in seen:
+                if url in seen or cls._looks_like_query_mirror_url(question, url):
                     continue
                 seen.add(url)
                 urls.append(url)
                 if len(urls) >= limit:
                     return urls
         return urls
+
+    @classmethod
+    def _looks_like_query_mirror_url(cls, question: str, url: str) -> bool:
+        question_terms = cls._search_query_terms(question) - _LINK_STOPWORDS
+        if len(question_terms) < 7:
+            return False
+        path = unquote(urlsplit(url).path).replace("-", " ")
+        path_terms = cls._search_query_terms(path) - _LINK_STOPWORDS
+        if len(path) < 120 or len(path_terms) < 14:
+            return False
+        overlap = len(question_terms & path_terms)
+        return overlap >= 8 and overlap / len(question_terms) >= 0.5
 
     async def _automatic_external_finalization(
         self,
