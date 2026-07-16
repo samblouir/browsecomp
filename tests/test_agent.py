@@ -258,7 +258,7 @@ async def test_blocking_guidance_adversary_reviews_checkpoint_and_final(
         "run:item:guided:blocking-plan-final",
     ]
     assert any(
-        message.get("role") == "system"
+        message.get("role") == "user"
         and "Synchronous blocking plan-adherence review" in message.get("content", "")
         for message in model.calls[1][0]
     )
@@ -390,7 +390,7 @@ def test_blocking_guidance_review_parses_textual_blocked_fallback() -> None:
     assert "VERDICT: BLOCKED" in review["raw_review_content"]
 
 
-def test_blocking_checkpoint_adds_system_correction_after_tool_result() -> None:
+def test_blocking_checkpoint_adds_user_correction_after_tool_result() -> None:
     messages = [
         {"role": "assistant", "content": "", "tool_calls": []},
         {"role": "tool", "tool_call_id": "call-1", "content": '{"ok":true}'},
@@ -402,7 +402,7 @@ def test_blocking_checkpoint_adds_system_correction_after_tool_result() -> None:
 
     attached = AgentRunner._attach_blocking_guidance_review(messages, review)
 
-    assert attached["role"] == "system"
+    assert attached["role"] == "user"
     assert messages[-2]["role"] == "tool"
     assert "blocking_plan_adversary" in messages[-2]["content"]
     assert "next substantive action" in messages[-1]["content"]
@@ -444,6 +444,34 @@ def test_scripted_guidance_step_requires_action_and_exact_url() -> None:
     )
     assert not AgentRunner._action_matches_scripted_step(
         AgentAction(action="open", payload={"url": "https://example.test/other"}),
+        step,
+    )
+
+
+def test_scripted_guidance_step_requires_all_exact_queries() -> None:
+    step = {
+        "allowed_actions": ["search_many"],
+        "required_queries": ["rare clue archive", 'site:example.org "exact phrase"'],
+    }
+
+    assert AgentRunner._action_matches_scripted_step(
+        AgentAction(
+            action="search_many",
+            payload={
+                "queries": [
+                    "rare   clue archive",
+                    'SITE:EXAMPLE.ORG "exact phrase"',
+                    "additional falsification",
+                ]
+            },
+        ),
+        step,
+    )
+    assert not AgentRunner._action_matches_scripted_step(
+        AgentAction(
+            action="search_many",
+            payload={"queries": ["rare clue archive"]},
+        ),
         step,
     )
 

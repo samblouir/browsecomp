@@ -165,6 +165,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 blocking_guidance_adversary=True,
                 guidance_adversary_interval_steps=args.review_interval,
                 guidance_adversary_max_checkpoints=args.max_checkpoint_reviews,
+                scripted_guidance_role="user",
+                scripted_step_max_attempts=4,
             )
         grade = await grader.grade(item.question, item.answer, outcome.response_text)
         result = {

@@ -39,6 +39,16 @@ _STRATEGY_PLACEHOLDER_QUERY = re.compile(
 _BENCHMARK_REQUEST_NAMESPACE = re.compile(
     r"^(?P<run>.+):bc250-(?P<rank>\d+)-row-\d+:attempt-\d+(?P<suffix>.*)$"
 )
+
+SCRIPTED_FINAL_SYSTEM_PROMPT = (
+    "You are the final synthesis stage of a completed research trajectory. "
+    "All retrieval is finished and the only available action is final. Read "
+    "the supplied original question and inspected public evidence, reason "
+    "carefully, then call the final tool exactly once. Set exact_answer to "
+    "only the requested concrete answer, include a concise evidence-based "
+    "explanation, calibrated confidence, and inspected citation URLs. Never "
+    "emit, request, describe, or simulate a search, open, note, or helper call."
+)
 _LINK_STOPWORDS = frozenset(
     {
         "a",
@@ -221,11 +231,19 @@ class AgentRunner:
         *,
         request_namespace: str | None = None,
         initial_guidance: str | None = None,
+        review_guidance: str | None = None,
         scripted_guidance_steps: list[dict[str, Any]] | None = None,
         blocking_guidance_adversary: bool = False,
         guidance_adversary_interval_steps: int = 8,
         guidance_adversary_max_checkpoints: int = 2,
+        scripted_final_block_fail_fast: bool = False,
+        scripted_guidance_role: str = "user",
+        scripted_step_max_attempts: int = 6,
     ) -> AgentOutcome:
+        if scripted_guidance_role not in {"system", "user"}:
+            raise ValueError("scripted_guidance_role must be 'system' or 'user'")
+        if scripted_step_max_attempts < 1:
+            raise ValueError("scripted_step_max_attempts must be at least 1")
         started = time.perf_counter()
         usage = Usage()
         transcript: list[dict[str, Any]] = []
@@ -251,6 +269,7 @@ class AgentRunner:
         pending_surface_constraint_correction: str | None = None
         pending_guidance_block: dict[str, Any] | None = None
         scripted_step_index = 0
+        scripted_step_attempts = 0
         scripted_final_context_recorded = False
         guidance_adversary_checkpoints = 0
         guidance_final_reviews: dict[str, dict[str, Any]] = {}
@@ -264,6 +283,7 @@ class AgentRunner:
         )
         chain_namespace = request_headers["X-FRL-Conversation-Id"].removeprefix("bc250-")
         external_namespace = request_namespace or chain_namespace
+        adversary_guidance = review_guidance or initial_guidance or ""
 
         guidance_block = ""
         if initial_guidance and initial_guidance.strip():
@@ -306,13 +326,28 @@ class AgentRunner:
             scripted_force_final = False
             if scripted_guidance_steps and scripted_step_index < len(scripted_guidance_steps):
                 current_scripted_step = scripted_guidance_steps[scripted_step_index]
+                scripted_step_attempts += 1
+                if scripted_step_attempts > scripted_step_max_attempts:
+                    failure = (
+                        "Teacher-forced step exceeded its bounded retry budget: "
+                        + canonical_json(current_scripted_step)
+                    )
+                    errors.append(failure)
+                    self._emit(
+                        "scripted_guidance_step_exhausted",
+                        step=step,
+                        scripted_step_index=scripted_step_index,
+                        attempts=scripted_step_attempts - 1,
+                        scripted_step=current_scripted_step,
+                    )
+                    break
                 scripted_force_final = {
                     str(value).strip()
                     for value in current_scripted_step.get("allowed_actions", [])
                     if str(value).strip()
                 } == {"final"}
                 scripted_message = {
-                    "role": "system",
+                    "role": scripted_guidance_role,
                     "content": (
                         "Teacher-forced research step "
                         f"{scripted_step_index + 1}/{len(scripted_guidance_steps)}. "
@@ -331,6 +366,7 @@ class AgentRunner:
                     step=step,
                     scripted_step_index=scripted_step_index,
                     scripted_step=current_scripted_step,
+                    scripted_guidance_role=scripted_guidance_role,
                 )
             checkpoint_due = bool(
                 blocking_guidance_adversary
@@ -350,7 +386,7 @@ class AgentRunner:
                 )
                 review = await self._blocking_guidance_adversary_review(
                     question=question,
-                    guidance=initial_guidance or "",
+                    guidance=adversary_guidance,
                     messages=messages,
                     notes=notes,
                     opened=opened,
@@ -404,15 +440,7 @@ class AgentRunner:
                         }
                         for document in list(opened.values())[-12:]
                     ]
-                    final_system = (
-                        "You are the final synthesis stage of a completed research trajectory. "
-                        "All retrieval is finished and the only available action is final. Read "
-                        "the supplied original question and inspected public evidence, reason "
-                        "carefully, then call the final tool exactly once. Set exact_answer to "
-                        "only the requested concrete answer, include a concise evidence-based "
-                        "explanation, calibrated confidence, and inspected citation URLs. Never "
-                        "emit, request, describe, or simulate a search, open, note, or helper call."
-                    )
+                    final_system = SCRIPTED_FINAL_SYSTEM_PROMPT
                     final_user = (
                         "Research plan:\n"
                         + (initial_guidance or "")
@@ -427,6 +455,8 @@ class AgentRunner:
                             canonical_json(last_successful_search_result or {}),
                             30_000,
                         )
+                        + "\n\nSaved structured research notes:\n"
+                        + canonical_json(notes[-20:])
                     )
                     wire_messages = [
                         {"role": "system", "content": final_system},
@@ -457,6 +487,8 @@ class AgentRunner:
                         context_chars=sum(
                             len(str(message.get("content") or "")) for message in wire_messages
                         ),
+                        final_system=final_system,
+                        final_user=final_user,
                     )
                 if chain_enabled:
                     chain_body = {
@@ -778,7 +810,7 @@ class AgentRunner:
                     chain_delta_messages = [correction_message]
                 else:
                     messages.append({"role": "assistant", "content": response.content})
-                    correction_message = {"role": "system", "content": correction}
+                    correction_message = {"role": "user", "content": correction}
                     messages.append(correction_message)
                     transcript.append(correction_message)
                     chain_delta_messages = [correction_message]
@@ -839,7 +871,7 @@ class AgentRunner:
                         chain_delta_messages = [correction_message]
                     else:
                         messages.append({"role": "assistant", "content": response.content})
-                        correction_message = {"role": "system", "content": correction}
+                        correction_message = {"role": "user", "content": correction}
                         messages.append(correction_message)
                         transcript.append(correction_message)
                         chain_delta_messages = [correction_message]
@@ -1097,7 +1129,7 @@ class AgentRunner:
                         )
                         adversary_review = await self._blocking_guidance_adversary_review(
                             question=question,
-                            guidance=initial_guidance,
+                            guidance=adversary_guidance,
                             messages=messages,
                             notes=notes,
                             opened=opened,
@@ -1171,6 +1203,14 @@ class AgentRunner:
                             verdict=verdict,
                             required_next_actions=required_actions,
                         )
+                        if scripted_final_block_fail_fast and scripted_force_final:
+                            self._emit(
+                                "scripted_guidance_final_blocked",
+                                step=step,
+                                verdict=verdict,
+                                required_next_actions=required_actions,
+                            )
+                            break
                         continue
                 outcome = self._final_outcome(
                     action,
@@ -1357,7 +1397,7 @@ class AgentRunner:
                         )
                         adversary_review = await self._blocking_guidance_adversary_review(
                             question=question,
-                            guidance=initial_guidance,
+                            guidance=adversary_guidance,
                             messages=messages,
                             notes=notes,
                             opened=opened,
@@ -2069,6 +2109,7 @@ class AgentRunner:
                         action_succeeded=bool(result.get("ok")),
                     )
                     scripted_step_index += 1
+                    scripted_step_attempts = 0
                 else:
                     self._emit(
                         "scripted_guidance_step_retry",
@@ -2383,7 +2424,7 @@ class AgentRunner:
                 return pending
 
         controller_message = {
-            "role": "system",
+            "role": "user",
             "content": (
                 "Synchronous blocking plan-adherence review:\n"
                 + canonical_json(review)
@@ -2426,22 +2467,49 @@ class AgentRunner:
         if action.action not in allowed_actions:
             return False
         required_urls = scripted_step.get("required_urls")
-        if not isinstance(required_urls, list) or not required_urls:
-            return True
-        supplied_urls: list[str] = []
-        url = action.payload.get("url")
-        if isinstance(url, str) and url.strip():
-            supplied_urls.append(url.strip())
-        urls = action.payload.get("urls")
-        if isinstance(urls, list):
-            supplied_urls.extend(str(value).strip() for value in urls if str(value).strip())
+        if isinstance(required_urls, list) and required_urls:
+            supplied_urls: list[str] = []
+            url = action.payload.get("url")
+            if isinstance(url, str) and url.strip():
+                supplied_urls.append(url.strip())
+            urls = action.payload.get("urls")
+            if isinstance(urls, list):
+                supplied_urls.extend(
+                    str(value).strip() for value in urls if str(value).strip()
+                )
 
-        def normalize(value: str) -> str:
-            return value.strip().rstrip("/").casefold()
+            def normalize(value: str) -> str:
+                return value.strip().rstrip("/").casefold()
 
-        supplied = {normalize(value) for value in supplied_urls}
-        required = {normalize(str(value)) for value in required_urls if str(value).strip()}
-        return bool(required) and required.issubset(supplied)
+            supplied = {normalize(value) for value in supplied_urls}
+            required = {normalize(str(value)) for value in required_urls if str(value).strip()}
+            if not required or not required.issubset(supplied):
+                return False
+
+        required_queries = scripted_step.get("required_queries")
+        if isinstance(required_queries, list) and required_queries:
+            supplied_queries: list[str] = []
+            query = action.payload.get("query")
+            if isinstance(query, str) and query.strip():
+                supplied_queries.append(query.strip())
+            queries = action.payload.get("queries")
+            if isinstance(queries, list):
+                supplied_queries.extend(
+                    str(value).strip() for value in queries if str(value).strip()
+                )
+
+            def normalize_query(value: str) -> str:
+                return " ".join(value.split()).casefold()
+
+            supplied_query_set = {normalize_query(value) for value in supplied_queries}
+            required_query_set = {
+                normalize_query(str(value))
+                for value in required_queries
+                if str(value).strip()
+            }
+            if not required_query_set or not required_query_set.issubset(supplied_query_set):
+                return False
+        return True
 
     @classmethod
     def _blocking_guidance_review_payload(cls, result: dict[str, Any]) -> dict[str, Any]:
@@ -2611,7 +2679,9 @@ class AgentRunner:
                 ),
                 "query": (
                     "Return exactly one JSON object with this schema and no markdown: "
-                    '{"verdict":"PASS|ON_TRACK|BLOCK","observed_stage":"short stage",'
+                    '{"verdict":"'
+                    + ("PASS|BLOCK" if phase.startswith("final") else "ON_TRACK|BLOCK")
+                    + '","observed_stage":"short stage",'
                     '"followed":["specific completed requirement"],'
                     '"material_deviations":["specific deviation"],'
                     '"required_next_actions":["specific executable action"],'
