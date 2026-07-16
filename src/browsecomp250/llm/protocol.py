@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from typing import Any
 
 from ..types import AgentAction
@@ -21,6 +22,165 @@ _ALLOWED_ACTIONS = {
 
 class ProtocolError(ValueError):
     pass
+
+
+_GEMMA_STRING_DELIMITER = '<|"|>'
+_GEMMA_TOOL_CALL_SUFFIX = "<tool_call|>"
+
+
+class _GemmaFunctionArgumentsParser:
+    """Parse the compact function syntax occasionally leaked into a tool name."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.index = 0
+
+    def parse(self) -> dict[str, Any]:
+        self._skip_space()
+        value = self._parse_object() if self._peek() == "{" else self._parse_pairs()
+        self._skip_space()
+        while self._peek() in {"}", ")"}:
+            self.index += 1
+            self._skip_space()
+        if self.index != len(self.text):
+            raise ProtocolError("Unexpected trailing text in serialized tool name")
+        return value
+
+    def _parse_pairs(self, closing: str | None = None) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        while self.index < len(self.text):
+            self._skip_space()
+            if closing is not None and self._peek() == closing:
+                self.index += 1
+                return result
+            if closing is None and self._peek() in {"}", ")"}:
+                return result
+            key = self._parse_key()
+            self._skip_space()
+            self._expect(":")
+            result[key] = self._parse_value()
+            self._skip_space()
+            if self._peek() == ",":
+                self.index += 1
+                continue
+            if closing is not None and self._peek() == closing:
+                self.index += 1
+                return result
+            if closing is None and self._peek() in {"", "}", ")"}:
+                return result
+            raise ProtocolError("Expected a separator in serialized tool arguments")
+        if closing is not None:
+            raise ProtocolError("Unclosed object in serialized tool arguments")
+        return result
+
+    def _parse_key(self) -> str:
+        self._skip_space()
+        if self.text.startswith(_GEMMA_STRING_DELIMITER, self.index):
+            return self._parse_gemma_string()
+        if self._peek() == '"':
+            value = self._parse_json_string()
+            if not isinstance(value, str):
+                raise ProtocolError("Serialized tool argument key must be a string")
+            return value
+        match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", self.text[self.index :])
+        if match is None:
+            raise ProtocolError("Invalid key in serialized tool arguments")
+        self.index += len(match.group(0))
+        return match.group(0)
+
+    def _parse_value(self) -> Any:
+        self._skip_space()
+        if self.text.startswith(_GEMMA_STRING_DELIMITER, self.index):
+            return self._parse_gemma_string()
+        char = self._peek()
+        if char == '"':
+            return self._parse_json_string()
+        if char == "[":
+            return self._parse_array()
+        if char == "{":
+            return self._parse_object()
+        match = re.match(
+            r"(?:-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|true|false|null)",
+            self.text[self.index :],
+        )
+        if match is not None:
+            token = match.group(0)
+            self.index += len(token)
+            return json.loads(token)
+        raise ProtocolError("Unsupported value in serialized tool arguments")
+
+    def _parse_array(self) -> list[Any]:
+        self._expect("[")
+        values: list[Any] = []
+        while True:
+            self._skip_space()
+            if self._peek() == "]":
+                self.index += 1
+                return values
+            values.append(self._parse_value())
+            self._skip_space()
+            if self._peek() == ",":
+                self.index += 1
+                continue
+            if self._peek() == "]":
+                self.index += 1
+                return values
+            # Some vLLM parser failures collapse one adjacent Gemma close/open
+            # delimiter into a single token. Recover the orphaned string between
+            # the current position and the next delimiter, but only inside an
+            # already recognized array value.
+            next_delimiter = self.text.find(_GEMMA_STRING_DELIMITER, self.index)
+            if next_delimiter > self.index:
+                orphan = self.text[self.index : next_delimiter].strip().lstrip(",").strip()
+                if orphan:
+                    if isinstance(values[-1], str):
+                        values[-1] = values[-1].rstrip(",").rstrip()
+                    values.append(orphan)
+                    self.index = next_delimiter + len(_GEMMA_STRING_DELIMITER)
+                    self._skip_space()
+                    if self._peek() == ",":
+                        self.index += 1
+                        continue
+                    if self._peek() == "]":
+                        self.index += 1
+                        return values
+            raise ProtocolError("Expected a separator in serialized tool array")
+
+    def _parse_object(self) -> dict[str, Any]:
+        self._expect("{")
+        return self._parse_pairs("}")
+
+    def _parse_gemma_string(self) -> str:
+        self.index += len(_GEMMA_STRING_DELIMITER)
+        end = self.text.find(_GEMMA_STRING_DELIMITER, self.index)
+        if end < 0:
+            raise ProtocolError("Unclosed Gemma string in serialized tool arguments")
+        value = self.text[self.index : end]
+        self.index = end + len(_GEMMA_STRING_DELIMITER)
+        return value
+
+    def _parse_json_string(self) -> str:
+        try:
+            value, length = json.JSONDecoder().raw_decode(self.text[self.index :])
+        except json.JSONDecodeError as exc:
+            raise ProtocolError("Invalid JSON string in serialized tool arguments") from exc
+        if not isinstance(value, str):
+            raise ProtocolError("Expected a string in serialized tool arguments")
+        self.index += length
+        return value
+
+    def _expect(self, expected: str) -> None:
+        self._skip_space()
+        if self._peek() != expected:
+            raise ProtocolError(f"Expected {expected!r} in serialized tool arguments")
+        self.index += 1
+
+    def _peek(self) -> str:
+        return self.text[self.index] if self.index < len(self.text) else ""
+
+    def _skip_space(self) -> None:
+        while self.index < len(self.text) and self.text[self.index].isspace():
+            self.index += 1
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -139,9 +299,21 @@ def _validate_payload(action: str, payload: dict[str, Any]) -> None:
                 raise ProtocolError("confidence must be between 0 and 100")
 
 
-def action_from_tool_call(tool_call: dict[str, Any]) -> AgentAction:
-    function = tool_call.get("function") or {}
-    name = str(function.get("name", "")).strip()
+def _serialized_name_payload(name: str) -> tuple[str, dict[str, Any]] | None:
+    if "(" not in name:
+        return None
+    candidate, serialized = name.split("(", 1)
+    candidate = candidate.strip()
+    if candidate not in _ALLOWED_ACTIONS:
+        return None
+    serialized = serialized.strip()
+    if serialized.endswith(_GEMMA_TOOL_CALL_SUFFIX):
+        serialized = serialized[: -len(_GEMMA_TOOL_CALL_SUFFIX)].rstrip()
+    payload = _GemmaFunctionArgumentsParser(serialized).parse()
+    return candidate, payload
+
+
+def _decoded_arguments(function: dict[str, Any], name: str) -> dict[str, Any]:
     arguments = function.get("arguments", "{}")
     if isinstance(arguments, str):
         try:
@@ -149,11 +321,61 @@ def action_from_tool_call(tool_call: dict[str, Any]) -> AgentAction:
         except json.JSONDecodeError as exc:
             raise ProtocolError(f"Invalid tool arguments for {name}: {exc}") from exc
     elif isinstance(arguments, dict):
-        payload = arguments
+        payload = deepcopy(arguments)
     else:
         raise ProtocolError(f"Invalid tool arguments type for {name}")
+    if not isinstance(payload, dict):
+        raise ProtocolError(f"Tool arguments for {name} must be an object")
+    return payload
+
+
+def _normalize_external_requests(payload: dict[str, Any]) -> dict[str, Any]:
+    allowed = {"query", "context", "system", "task_mode"}
+    requests = payload.get("requests")
+    valid_requests = (
+        isinstance(requests, list)
+        and bool(requests)
+        and all(isinstance(item, dict) for item in requests)
+    )
+    if valid_requests:
+        common = {
+            key: payload[key]
+            for key in ("context", "system", "task_mode")
+            if key in payload
+        }
+        normalized_requests = []
+        for raw_request in requests[:4]:
+            request = {key: value for key, value in raw_request.items() if key in allowed}
+            for key, value in common.items():
+                request.setdefault(key, value)
+            normalized_requests.append(request)
+        return {"requests": normalized_requests}
+    return {key: value for key, value in payload.items() if key in allowed}
+
+
+def canonicalize_tool_call(
+    tool_call: dict[str, Any],
+    *,
+    expected_action: str | None = None,
+    required_queries: list[str] | None = None,
+    required_urls: list[str] | None = None,
+) -> tuple[AgentAction, dict[str, Any]]:
+    """Return a validated action and the canonical OpenAI tool-call representation."""
+
+    canonical = deepcopy(tool_call)
+    function = canonical.get("function")
+    if not isinstance(function, dict):
+        raise ProtocolError("Tool call is missing a function object")
+    raw_name = str(function.get("name", "")).strip()
+    recovered = _serialized_name_payload(raw_name)
+    name = recovered[0] if recovered is not None else raw_name
+    payload = _decoded_arguments(function, name)
+    if recovered is not None:
+        recovered_payload = recovered[1]
+        payload = {**recovered_payload, **payload} if payload else recovered_payload
     if name not in _ALLOWED_ACTIONS:
-        raise ProtocolError(f"Unknown tool: {name}")
+        raise ProtocolError(f"Unknown tool: {raw_name}")
+
     # Reasoning models occasionally pair a singular tool name with its batch
     # argument (or vice versa). The intended operation is unambiguous, so
     # normalize the shape instead of discarding a useful evidence request.
@@ -173,5 +395,35 @@ def action_from_tool_call(tool_call: dict[str, Any]) -> AgentAction:
         payload.pop("urls", None)
     elif name == "open_many" and "urls" not in payload and isinstance(payload.get("url"), str):
         name = "open"
+    if expected_action in _ALLOWED_ACTIONS:
+        related = {
+            frozenset({"search", "search_many"}),
+            frozenset({"open", "open_many"}),
+        }
+        if name == expected_action or frozenset({name, expected_action}) in related:
+            name = expected_action
+    if name == expected_action == "search" and required_queries:
+        payload["query"] = str(required_queries[0])
+        payload.pop("queries", None)
+    elif name == expected_action == "search_many" and required_queries:
+        payload["queries"] = [str(value) for value in required_queries]
+        payload.pop("query", None)
+    elif name == expected_action == "open" and required_urls:
+        payload["url"] = str(required_urls[0])
+        payload.pop("urls", None)
+    elif name == expected_action == "open_many" and required_urls:
+        payload["urls"] = [str(value) for value in required_urls]
+        payload.pop("url", None)
+    if name == "ask_external_model":
+        payload = _normalize_external_requests(payload)
     _validate_payload(name, payload)
-    return AgentAction(action=name, payload=payload)  # type: ignore[arg-type]
+    action = AgentAction(action=name, payload=payload)  # type: ignore[arg-type]
+    function["name"] = name
+    function["arguments"] = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    canonical["function"] = function
+    return action, canonical
+
+
+def action_from_tool_call(tool_call: dict[str, Any]) -> AgentAction:
+    action, _ = canonicalize_tool_call(tool_call)
+    return action

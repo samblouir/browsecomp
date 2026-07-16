@@ -18,7 +18,7 @@ from ..external import ExternalModelBroker, ExternalModelError
 from ..geo import GeoResearchClient, GeoResearchError
 from ..llm import ModelAPIError, OpenAICompatibleClient, ProtocolError, parse_json_action
 from ..llm.client import settings_from_model_config
-from ..llm.protocol import action_from_tool_call
+from ..llm.protocol import action_from_tool_call, canonicalize_tool_call
 from ..llm.tools import tool_schemas
 from ..prompts import AGENT_SYSTEM_PROMPT
 from ..search.base import SearchError, SearchProvider
@@ -579,6 +579,51 @@ class AgentRunner:
                 errors.append(str(exc))
                 self._emit("model_error", step=step, error=str(exc))
                 break
+
+            raw_tool_calls = response.raw_message.get("tool_calls")
+            if (
+                protocol in {"tools", "auto"}
+                and isinstance(raw_tool_calls, list)
+                and raw_tool_calls
+                and isinstance(raw_tool_calls[0], dict)
+            ):
+                raw_tool_call = raw_tool_calls[0]
+                required_queries = (
+                    current_scripted_step.get("required_queries")
+                    if current_scripted_step is not None
+                    else None
+                )
+                required_urls = (
+                    current_scripted_step.get("required_urls")
+                    if current_scripted_step is not None
+                    else None
+                )
+                try:
+                    _, canonical_tool_call = canonicalize_tool_call(
+                        raw_tool_call,
+                        expected_action=scripted_required_action,
+                        required_queries=(
+                            required_queries if isinstance(required_queries, list) else None
+                        ),
+                        required_urls=(required_urls if isinstance(required_urls, list) else None),
+                    )
+                except ProtocolError:
+                    # Preserve malformed evidence for the ordinary protocol-retry path.
+                    pass
+                else:
+                    if canonical_tool_call != raw_tool_call:
+                        self._emit(
+                            "tool_call_normalized",
+                            step=step,
+                            raw_tool_call=raw_tool_call,
+                            tool_call=canonical_tool_call,
+                            scripted_step_id=(
+                                current_scripted_step.get("id")
+                                if current_scripted_step is not None
+                                else None
+                            ),
+                        )
+                    response.raw_message["tool_calls"] = [canonical_tool_call]
 
             self._emit(
                 "model_response",

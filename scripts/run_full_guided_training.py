@@ -268,6 +268,35 @@ def reconstructed_initial_messages(
     ]
 
 
+def mark_item_completed(
+    item_dir: Path,
+    oracle_record: dict[str, Any],
+    *,
+    result_status: str,
+) -> None:
+    status_path = item_dir / "status.json"
+    status: dict[str, Any] = {}
+    if status_path.exists():
+        try:
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            status = {}
+    status.update(
+        {
+            "item_id": oracle_record["item"]["item_id"],
+            "row_index": oracle_record["item"]["row_index"],
+            "correct": True,
+            "status": "completed",
+            "attempts": existing_attempt_number(item_dir),
+            "next_attempt": None,
+            "last_result_status": result_status,
+            "last_error": None,
+            "updated_at": utc_now_iso(),
+        }
+    )
+    write_private_json(status_path, status)
+
+
 async def recover_verified_rows(
     *,
     output_dir: Path,
@@ -282,7 +311,14 @@ async def recover_verified_rows(
     for index in indices:
         oracle_record = oracle_records[index]
         item_dir = item_directory(output_dir, oracle_record)
-        if completed_training_path(output_dir, oracle_record).exists() or not item_dir.exists():
+        if completed_training_path(output_dir, oracle_record).exists():
+            mark_item_completed(
+                item_dir,
+                oracle_record,
+                result_status="existing_verified_training",
+            )
+            continue
+        if not item_dir.exists():
             continue
         for result_path in sorted(item_dir.glob("attempt-*-result.json")):
             try:
@@ -376,6 +412,11 @@ async def recover_verified_rows(
             }
             recovery["grader_mode"] = grade_mode
             write_private_json(item_dir / "verified-answer-recovery.json", recovery)
+            mark_item_completed(
+                item_dir,
+                oracle_record,
+                result_status="verified_answer_recovery",
+            )
             recovered.append(
                 {
                     "row_index": index,

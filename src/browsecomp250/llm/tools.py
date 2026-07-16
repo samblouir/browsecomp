@@ -28,29 +28,6 @@ def tool_schemas(*, include_external_model: bool = True) -> list[dict[str, Any]]
         },
         "context": {"type": "string", "maxLength": 200000},
         "system": {"type": "string", "maxLength": 32000},
-        "provider": {
-            "type": "string",
-            "enum": ["chatgpt", "openai", "anthropic", "gemini", "openrouter"],
-        },
-        "model": {"type": "string", "maxLength": 200},
-        "max_tokens": {
-            "type": "integer",
-            "minimum": 16384,
-            "maximum": 32768,
-            "default": 16384,
-        },
-        "temperature": {
-            "type": "number",
-            "minimum": 0.3,
-            "maximum": 1.0,
-            "default": 0.7,
-        },
-        "top_p": {
-            "type": "number",
-            "exclusiveMinimum": 0.0,
-            "maximum": 1.0,
-            "default": 0.95,
-        },
     }
 
     tools = [
@@ -172,12 +149,11 @@ def tool_schemas(*, include_external_model: bool = True) -> list[dict[str, Any]]
             "ask_external_model",
             (
                 "Ask an independent external model for difficult reasoning, current facts, or "
-                "critique. Supply query for one consultation, or requests for up to four "
-                "consultations that run concurrently. Continue researching after reading the "
-                "answers; external responses are evidence, not authority."
+                "critique. Supply one to four independent consultations in requests. Continue "
+                "researching after reading the answers; external responses are evidence, not "
+                "authority. Routing and generation settings are selected by the deployment."
             ),
             {
-                **external_request_properties,
                 "requests": {
                     "type": "array",
                     "minItems": 1,
@@ -190,7 +166,7 @@ def tool_schemas(*, include_external_model: bool = True) -> list[dict[str, Any]]
                     },
                 },
             },
-            [],
+            ["requests"],
         ),
         tool(
             "note",

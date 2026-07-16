@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from browsecomp250.llm.protocol import ProtocolError, action_from_tool_call, parse_json_action
+from browsecomp250.llm.protocol import (
+    ProtocolError,
+    action_from_tool_call,
+    canonicalize_tool_call,
+    parse_json_action,
+)
+from browsecomp250.llm.tools import tool_schemas
 
 
 def test_parse_json_action_from_fence() -> None:
@@ -95,3 +101,118 @@ def test_tool_call_normalizes_batch_name_with_singular_arguments() -> None:
     )
     assert action.action == "open"
     assert action.payload == {"url": "https://example.test"}
+
+
+def test_tool_call_recovers_gemma_serialized_search_batch_from_function_name() -> None:
+    action, canonical = canonicalize_tool_call(
+        {
+            "id": "call-1",
+            "type": "function",
+            "function": {
+                "name": (
+                    'search_many(queries:[<|"|>WHO report introduction<|"|>,'
+                    '<|"|>"Cristina Ortiz" graphic designer<|"|>]}<tool_call|>'
+                ),
+                "arguments": "{}",
+            },
+        }
+    )
+
+    assert action.action == "search_many"
+    assert action.payload == {
+        "queries": ["WHO report introduction", '"Cristina Ortiz" graphic designer']
+    }
+    assert canonical["function"] == {
+        "name": "search_many",
+        "arguments": (
+            '{"queries":["WHO report introduction",'
+            '"\\\"Cristina Ortiz\\\" graphic designer"]}'
+        ),
+    }
+
+
+def test_tool_call_recovers_collapsed_adjacent_gemma_string_delimiter() -> None:
+    action = action_from_tool_call(
+        {
+            "function": {
+                "name": (
+                    'search_many(queries:[<|"|>first query<|"|>,'
+                    '<|"|>second query,,<|"|>third query<|"|>]}<tool_call|>'
+                ),
+                "arguments": "{}",
+            }
+        }
+    )
+
+    assert action.payload == {"queries": ["first query", "second query", "third query"]}
+
+
+def test_tool_call_does_not_recover_unknown_serialized_function() -> None:
+    with pytest.raises(ProtocolError, match="Unknown tool"):
+        action_from_tool_call(
+            {
+                "function": {
+                    "name": 'shell(command:<|"|>rm -rf /<|"|>)<tool_call|>',
+                    "arguments": "{}",
+                }
+            }
+        )
+
+
+def test_external_tool_call_prefers_fanout_and_strips_routing_overrides() -> None:
+    action, canonical = canonicalize_tool_call(
+        {
+            "function": {
+                "name": "ask_external_model",
+                "arguments": json.dumps(
+                    {
+                        "query": "redundant singular request",
+                        "provider": "other",
+                        "model": "other-model",
+                        "context": "shared evidence",
+                        "requests": [
+                            {"query": "rare-anchor review", "model": "other-model"},
+                            {"query": "falsify candidate", "provider": "other"},
+                        ],
+                    }
+                ),
+            }
+        }
+    )
+
+    assert action.payload == {
+        "requests": [
+            {"query": "rare-anchor review", "context": "shared evidence"},
+            {"query": "falsify candidate", "context": "shared evidence"},
+        ]
+    }
+    assert json.loads(canonical["function"]["arguments"]) == action.payload
+
+
+def test_forced_guide_step_restores_only_its_redacted_query_contract() -> None:
+    action, _ = canonicalize_tool_call(
+        {
+            "function": {
+                "name": "search",
+                "arguments": '{"query":"transport-corrupted copy"}',
+            }
+        },
+        expected_action="search_many",
+        required_queries=["first redacted query", "second redacted query"],
+    )
+
+    assert action.action == "search_many"
+    assert action.payload == {
+        "queries": ["first redacted query", "second redacted query"]
+    }
+
+
+def test_external_tool_schema_exposes_no_provider_or_generation_overrides() -> None:
+    external = next(
+        tool for tool in tool_schemas() if tool["function"]["name"] == "ask_external_model"
+    )["function"]
+    parameters = external["parameters"]
+    assert parameters["required"] == ["requests"]
+    assert set(parameters["properties"]) == {"requests"}
+    request_properties = parameters["properties"]["requests"]["items"]["properties"]
+    assert set(request_properties) == {"query", "context", "system"}
