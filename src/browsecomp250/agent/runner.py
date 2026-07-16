@@ -3977,18 +3977,37 @@ class AgentRunner:
             )
             if answer_present and cls._page_matches_question(question, page):
                 supporting_documents.append(document)
-        minimum_support = cls._minimum_answer_supporting_documents(question)
-        if len(supporting_documents) >= minimum_support:
-            return []
-        if supporting_documents:
+        if not supporting_documents:
             return [
-                "a multi-hop question requires at least "
-                f"{minimum_support} independently opened answer-naming sources, but only "
-                f"{len(supporting_documents)} was supplied"
+                "no cited, inspected page both names the proposed exact answer and materially "
+                "matches the question"
             ]
+
+        # A multi-hop answer is often stated only by the terminal source: for example, an
+        # itinerary names the requested time while a separate interview establishes identity.
+        # Requiring every source in the chain to repeat the exact answer incorrectly rejects the
+        # strongest evidence shape. Require one answer-naming page, then count other cited,
+        # inspected, question-relevant pages toward the multi-hop corroboration requirement.
+        minimum_support = cls._minimum_answer_supporting_documents(question)
+        relevant_documents = [
+            document
+            for document in cited_documents
+            if cls._page_matches_question(
+                question,
+                {
+                    "title": document.title,
+                    "text": document.text,
+                    "requested_url": document.requested_url,
+                    "final_url": document.final_url,
+                },
+            )
+        ]
+        if len(relevant_documents) >= minimum_support:
+            return []
         return [
-            "no cited, inspected page both names the proposed exact answer and materially "
-            "matches the question"
+            "a multi-hop question requires at least "
+            f"{minimum_support} cited, inspected, question-relevant sources, including one that "
+            f"names the exact answer; only {len(relevant_documents)} relevant source(s) were supplied"
         ]
 
     @staticmethod

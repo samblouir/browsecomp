@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -132,11 +131,11 @@ def test_compiler_redacts_private_label_but_keeps_public_source_url() -> None:
     assert "Secret Person" not in recovery["instruction"]
     assert "query_hints" in recovery["instruction"]
     assert "required_queries" not in recovery
-    assert [step["id"] for step in steps if step["id"].startswith("gap_closure_search_")] == [
-        "gap_closure_search_1",
-        "gap_closure_search_2",
-        "gap_closure_search_3",
-    ]
+    assert any(step["id"] == "answer_redacted_recovery_source_inspection" for step in steps)
+    assert any(step["id"] == "helper_source_inspection" for step in steps)
+    assert any(step["id"] == "candidate_gap_source_inspection" for step in steps)
+    assert any(step["id"] == "candidate_verification_source_inspection" for step in steps)
+    assert any(step["id"] == "pre_final_repair_source_inspection" for step in steps)
     assert steps[-1]["allowed_actions"] == ["final"]
 
 
@@ -172,24 +171,25 @@ def test_label_checker_ignores_procedural_number_matching_numeric_answer() -> No
     ) == []
 
 
-def test_compiler_supplies_route_queries_without_brittle_exact_match_gate() -> None:
+def test_route_only_compiler_researches_early_then_opens_helper_sources() -> None:
     route, full = _records(sources=False)
     steps, _ = compile_guided_steps(route, full)
 
-    query_steps = [step for step in steps if step["id"].startswith("guide_search_rung_")]
-    assert len(query_steps) == 3
-    emitted_queries = [
-        query
-        for step in query_steps
-        for query in json.loads(step["instruction"].split("\n", 1)[1])["queries"]
-    ]
-    assert "rare 1901" in emitted_queries
-    assert "archive 1901" in emitted_queries
-    assert all(len(query.split()) >= 2 for query in emitted_queries)
-    assert all("required_queries" not in step for step in query_steps)
-    assert any(step["allowed_actions"] == ["ask_external_model"] for step in steps)
     helper = next(step for step in steps if step["id"] == "independent_research_helper")
     assert helper["minimum_batch_size"] == 4
+    helper_index = steps.index(helper)
+    helper_open = next(step for step in steps if step["id"] == "helper_source_inspection")
+    candidate_search = next(step for step in steps if step["id"] == "candidate_gap_search")
+    candidate_open = next(
+        step for step in steps if step["id"] == "candidate_gap_source_inspection"
+    )
+    assert helper_index == 2
+    assert helper_index < steps.index(helper_open) < steps.index(candidate_search)
+    assert steps.index(candidate_search) < steps.index(candidate_open)
+    assert all(not step["id"].startswith("guide_search_rung_") for step in steps)
+    discovery = steps[1]["instruction"]
+    assert '"Tuesday"' not in discovery
+    assert '"seed_queries"' not in discovery
     review = next(step for step in steps if step["id"] == "pre_final_adversarial_review")
     assert review["minimum_batch_size"] == 2
 

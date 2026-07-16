@@ -2029,7 +2029,7 @@ def test_final_evidence_preserves_literal_hashtag_relation() -> None:
     )
 
 
-def test_long_multihop_final_requires_two_answer_naming_opened_sources() -> None:
+def test_long_multihop_final_accepts_answer_source_plus_identity_chain_source() -> None:
     question = (
         "A 2018 database paper cataloged experimentally validated transcription factors. "
         "One author later joined an international research group in 2021. "
@@ -2048,7 +2048,10 @@ def test_long_multihop_final_requires_two_answer_naming_opened_sources() -> None
         requested_url="https://group.test/members",
         final_url="https://group.test/members",
         title="International genomics research group members",
-        text="Ada Example joined the international research group and genomics project.",
+        text=(
+            "The international research group formed in 2021 and continued its earlier genomics "
+            "collaboration project."
+        ),
         content_type="text/plain",
         status_code=200,
     )
@@ -2059,7 +2062,7 @@ def test_long_multihop_final_requires_two_answer_naming_opened_sources() -> None
         [first.final_url],
         {first.final_url: first, second.final_url: second},
     )
-    assert one_source_errors and "only 1 was supplied" in one_source_errors[0]
+    assert one_source_errors and "only 1 relevant source(s)" in one_source_errors[0]
     assert not AgentRunner._final_evidence_constraint_errors(
         question,
         "Ada Example",

@@ -206,11 +206,26 @@ def compile_guided_steps(
                         "metadata_policy": discovery_profile["route_metadata_role"],
                         "workers": [
                             {
-                                "role": worker.get("role"),
-                                "assignment": worker.get("assignment"),
-                                "seed_queries": worker.get("seed_queries"),
-                            }
-                            for worker in (route_record.get("workers") or [])[:3]
+                                "role": "rare_anchor_researcher",
+                                "assignment": (
+                                    "Generate named hypotheses from the rarest relation, then test "
+                                    "them against primary or contemporary sources."
+                                ),
+                            },
+                            {
+                                "role": "relation_graph_inverter",
+                                "assignment": (
+                                    "Start from the requested terminal fact and traverse backward "
+                                    "through the constrained event, person, work, or place."
+                                ),
+                            },
+                            {
+                                "role": "alternate_candidate_falsifier",
+                                "assignment": (
+                                    "Maintain a minimal-pair alternative and search for the single "
+                                    "clue that distinguishes it from the leading candidate."
+                                ),
+                            },
                         ],
                     }
                 )
@@ -307,48 +322,18 @@ def compile_guided_steps(
                 "advance_on_attempt": True,
             }
         )
-
-    if not sources:
-        for ordinal, (step_id, queries) in enumerate(
-            zip(
-                ("S004", "S005", "S006"),
-                discovery_profile["query_rungs"],
-                strict=True,
-            ),
-            start=1,
-        ):
-            if not queries:
-                continue
-            steps.append(
-                {
-                    "id": f"guide_search_rung_{ordinal}",
-                    "plan_step_ids": [step_id],
-                    "instruction": (
-                        "Execute this question-first discovery rung as one batched search. These "
-                        "queries were rebuilt from multiple information-bearing clues because "
-                        "guide metadata can contain generic sentence starters or a topic-derived "
-                        "source mismatch. Preserve relation direction, make minimal search-engine "
-                        "syntax repairs when useful, inspect promising sources, and do not finalize.\n"
-                        + canonical_json({"queries": queries})
-                    ),
-                    "allowed_actions": ["search_many"],
-                    "advance_on_attempt": True,
-                }
-            )
-
-    for cycle in range(1, 4):
         steps.append(
             {
-                "id": f"gap_closure_search_{cycle}",
-                "plan_step_ids": ["S016", "S021", "S022", "S023", "S024"],
+                "id": "answer_redacted_recovery_source_inspection",
+                "plan_step_ids": ["S006", "S011", "S012"],
                 "instruction": (
-                    f"Repair cycle {cycle}/3: run one batched search focused only on the strongest "
-                    "remaining identity or hard-constraint gap. Use candidate names, exact role "
-                    "direction, dates, rare relations, alternate source language, archives, or "
-                    "source-family variants as appropriate. Do not repeat low-yield queries, do "
-                    "not search for benchmark answers, and do not finalize on this turn."
+                    "Open the strongest independently authored public pages returned by the "
+                    "answer-redacted recovery search. Use only exact URLs already present in tool "
+                    "results, prefer pages that expose the candidate identity or requested terminal "
+                    "fact, and exclude search pages, generated query mirrors, shops, and job pages. "
+                    "Call open_many even if only one credible source remains. Do not finalize."
                 ),
-                "allowed_actions": ["search_many"],
+                "allowed_actions": ["open_many"],
                 "advance_on_attempt": True,
             }
         )
@@ -358,13 +343,14 @@ def compile_guided_steps(
             "id": "independent_research_helper",
             "plan_step_ids": ["S003", "S013"],
             "instruction": (
-                "Launch four independent Star research agents in one ask_external_model call. "
-                "Give every request the complete original question and the public evidence "
-                "gathered so far, but assign distinct roles: rare-anchor solver, relation-graph "
-                "inverter, alternate-candidate falsifier, and evidence/canonical-form auditor. "
-                "Each must return one specific candidate, the decisive clue chain, unresolved "
-                "gaps, and public citation URLs. Generation settings and routing are supplied by "
-                "the deployment; do not request or name a provider or model. Do not finalize on "
+                "Launch four independent Star research agents in one ask_external_model call now, "
+                "before committing to a candidate. Give every request the complete original "
+                "question and all public evidence gathered so far, but assign distinct roles: "
+                "rare-anchor solver, relation-graph inverter, alternate-candidate falsifier, and "
+                "evidence/canonical-form auditor. Each agent must browse, open its decisive sources, "
+                "propose one specific candidate, preserve the exact clue relations, report unresolved "
+                "gaps, and return public citation URLs. Generation settings and routing are supplied "
+                "by the deployment; do not request or name a provider or model. Do not finalize on "
                 "this turn."
             ),
             "allowed_actions": ["ask_external_model"],
@@ -375,13 +361,63 @@ def compile_guided_steps(
 
     steps.append(
         {
+            "id": "helper_source_inspection",
+            "plan_step_ids": ["S006", "S011", "S012", "S013"],
+            "instruction": (
+                "Read all four researcher reports and call open_many on the strongest public source "
+                "URLs they actually returned. Open candidate-identifying and terminal-fact sources "
+                "from different evidence roles when possible. Use URLs verbatim; never invent a URL "
+                "or open a generated query-mirror page. This is evidence collection, not a vote: "
+                "include a minority report's source when it tests the strongest alternative. Do not "
+                "finalize."
+            ),
+            "allowed_actions": ["open_many"],
+            "advance_on_attempt": True,
+        }
+    )
+
+    steps.append(
+        {
+            "id": "candidate_gap_search",
+            "plan_step_ids": ["S004", "S005", "S006", "S016", "S021", "S022", "S023"],
+            "instruction": (
+                "Use the researcher reports and opened pages to run one batched candidate-specific "
+                "search. Build 3-7 short queries around named candidates and the most discriminating "
+                "unknown relation. Include at least one source-native or source-language route and "
+                "one query that works backward from the requested terminal fact. If no credible "
+                "candidate exists yet, use the rarest relation to generate named hypotheses rather "
+                "than restating the whole question. Do not repeat low-yield clue bundles or finalize."
+            ),
+            "allowed_actions": ["search_many"],
+            "advance_on_attempt": True,
+        }
+    )
+
+    steps.append(
+        {
+            "id": "candidate_gap_source_inspection",
+            "plan_step_ids": ["S011", "S012", "S016", "S021", "S022"],
+            "instruction": (
+                "Call open_many on the best public pages from the candidate-specific search. "
+                "Prioritize a page that directly names the requested answer and separate pages that "
+                "establish the identity chain. Use exact returned URLs and reject access gates, "
+                "query mirrors, and pages whose title merely repeats the search. Do not finalize."
+            ),
+            "allowed_actions": ["open_many"],
+            "advance_on_attempt": True,
+        }
+    )
+
+    steps.append(
+        {
             "id": "candidate_constraint_ledger",
             "plan_step_ids": ["S007", "S008", "S009"],
             "instruction": (
-                "Merge the evidence gathered so far into one candidate-by-constraint ledger. Save "
-                "a compact note naming the leading candidate and plausible alternatives, with each "
-                "hard constraint marked supported, unknown, or refuted. Resolve aliases before "
-                "merging entities. Do not finalize."
+                "Merge the opened evidence and all researcher reports into one candidate-by-"
+                "constraint ledger. Save a compact note naming the leading candidate and strongest "
+                "minimal-pair alternative, with each hard constraint marked direct support, "
+                "inference, unknown, or refuted. Resolve aliases before merging entities and do not "
+                "promote repeated unsupported claims. Do not finalize."
             ),
             "allowed_actions": ["note"],
         }
@@ -423,6 +459,20 @@ def compile_guided_steps(
                 "advance_on_attempt": True,
             }
         )
+        steps.append(
+            {
+                "id": "candidate_verification_source_inspection",
+                "plan_step_ids": ["S010", "S011", "S012"],
+                "instruction": (
+                    "Open the strongest pages returned by the candidate-specific verification "
+                    "search. Use exact returned URLs and prioritize direct support for the requested "
+                    "answer form plus the most fragile relation in the candidate ledger. Do not "
+                    "finalize."
+                ),
+                "allowed_actions": ["open_many"],
+                "advance_on_attempt": True,
+            }
+        )
 
     disconfirm_templates = [
         redact_oracle_text(value, oracle_record)
@@ -440,6 +490,20 @@ def compile_guided_steps(
                 + canonical_json({"query_templates": disconfirm_templates})
             ),
             "allowed_actions": ["search_many"],
+            "advance_on_attempt": True,
+        }
+    )
+    steps.append(
+        {
+            "id": "adversarial_source_inspection",
+            "plan_step_ids": ["S011", "S012", "S013", "S014", "S015"],
+            "instruction": (
+                "Open the strongest independently authored pages from the adversarial search, "
+                "including any source that could falsify the current winner or support the minimal-"
+                "pair alternative. Use only exact returned URLs. Distinguish a direct contradiction "
+                "from missing evidence and do not finalize."
+            ),
+            "allowed_actions": ["open_many"],
             "advance_on_attempt": True,
         }
     )
@@ -499,6 +563,17 @@ def compile_guided_steps(
                     "do not finalize on this turn."
                 ),
                 "allowed_actions": ["search_many"],
+                "advance_on_attempt": True,
+            },
+            {
+                "id": "pre_final_repair_source_inspection",
+                "plan_step_ids": ["S011", "S012", "S016", "S021", "S022", "S024"],
+                "instruction": (
+                    "Open the decisive pages returned by the repair search before final synthesis. "
+                    "Use exact returned URLs; prioritize direct answer support and any page needed to "
+                    "resolve a reviewer's material blocker. Do not finalize on this turn."
+                ),
+                "allowed_actions": ["open_many"],
                 "advance_on_attempt": True,
             },
         ]
