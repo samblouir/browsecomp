@@ -181,6 +181,7 @@ class AgentRunner:
         automatic_external_attempted = False
         automatic_strategy_recovery_attempted = False
         automatic_finalization_rescue_attempted = False
+        last_external_completion_at = started
         forced_nonfinal_rejections = 0
         last_action_fingerprint: str | None = None
         consecutive_duplicate_actions = 0
@@ -457,6 +458,7 @@ class AgentRunner:
                         await strategy_task
                     raise
                 external_model_calls += 1
+                last_external_completion_at = time.perf_counter()
                 transcript.append(
                     {
                         "role": "assistant",
@@ -643,12 +645,17 @@ class AgentRunner:
             rescue_threshold = self.agent_config.automatic_finalization_rescue_after_rejections
             rescue_seconds = self.agent_config.automatic_finalization_rescue_after_seconds
             elapsed_seconds = time.perf_counter() - started
+            seconds_since_external_completion = (
+                time.perf_counter() - last_external_completion_at
+            )
             forced_rescue_due = bool(
                 force_final_this_turn
                 and rescue_threshold > 0
                 and forced_nonfinal_rejections >= rescue_threshold
             )
-            time_rescue_due = bool(rescue_seconds > 0 and elapsed_seconds >= rescue_seconds)
+            time_rescue_due = bool(
+                rescue_seconds > 0 and seconds_since_external_completion >= rescue_seconds
+            )
             if (
                 (forced_rescue_due or time_rescue_due)
                 and not automatic_finalization_rescue_attempted
@@ -663,6 +670,7 @@ class AgentRunner:
                     reason="forced_final_rejection" if forced_rescue_due else "wall_clock",
                     rejection_count=forced_nonfinal_rejections,
                     elapsed_seconds=elapsed_seconds,
+                    seconds_since_external_completion=seconds_since_external_completion,
                 )
                 rescue_task = asyncio.create_task(
                     self._automatic_external_finalization(
@@ -695,6 +703,7 @@ class AgentRunner:
                         await rescue_task
                     raise
                 external_model_calls += int(rescue_result.get("attempted") or 1)
+                last_external_completion_at = time.perf_counter()
                 transcript.append(
                     {
                         "role": "assistant",
@@ -1252,12 +1261,15 @@ class AgentRunner:
                         successful=sum(bool(item.get("ok")) for item in consultations),
                         returned_chars=consultation_chars,
                     )
+                    last_external_completion_at = time.perf_counter()
                 search_calls += deltas[0]
                 page_opens += deltas[1]
                 find_calls += deltas[2]
                 retrieved_chars += deltas[3]
                 if action.action == "ask_external_model":
                     external_model_calls += int(result.get("attempted", 0))
+                    if int(result.get("attempted", 0)) > 0:
+                        last_external_completion_at = time.perf_counter()
                 if (
                     force_final
                     and result.get("ok")

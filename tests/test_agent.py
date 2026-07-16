@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 from copy import deepcopy
@@ -481,6 +482,12 @@ class FakeExternalModelBroker:
             }
             for index, item in enumerate(requests, start=1)
         ]
+
+
+class DelayedFakeExternalModelBroker(FakeExternalModelBroker):
+    async def ask_many(self, requests, *, request_namespace):
+        await asyncio.sleep(0.1)
+        return await super().ask_many(requests, request_namespace=request_namespace)
 
 
 class RescueExternalModelBroker:
@@ -1545,6 +1552,44 @@ async def test_agent_automatically_attaches_external_reviews_after_search_thresh
     assert namespace == "run:item:auto"
     assert len(requests) == 2
     assert all("Original research question" in request["context"] for request in requests)
+
+
+@pytest.mark.asyncio
+async def test_fresh_external_reviews_reset_wall_clock_rescue_timer(tmp_path: Path) -> None:
+    broker = DelayedFakeExternalModelBroker()
+    events = []
+    runner = AgentRunner(
+        ModelConfig(api_base="http://model.test/v1", api_key="k", model="m"),
+        AgentConfig(
+            max_steps=4,
+            max_search_calls=4,
+            automatic_external_after_search_calls=2,
+            automatic_external_requests=1,
+            automatic_finalization_rescue_after_seconds=0.05,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=AutomaticExternalModel(),
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=4,
+        ),
+        external_model_broker=broker,
+        event_sink=events.append,
+    )
+
+    outcome = await runner.run("Question", request_namespace="run:item:fresh-external")
+
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Answer"
+    assert outcome.external_model_calls == 1
+    assert len(broker.requests) == 1
+    assert not any(
+        event["event"] == "automatic_finalization_rescue_started" for event in events
+    )
 
 
 @pytest.mark.asyncio
