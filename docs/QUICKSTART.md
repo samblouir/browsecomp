@@ -165,6 +165,18 @@ This path also stays server-side and never launches a user's Chrome profile.
 Bing and Yahoo runs are distinct search-provider strata and must not be merged
 without retaining exact row-level provenance.
 
+For higher-recall server-side discovery without a user browser, query both
+engines and interleave their results:
+
+```dotenv
+BC250_SEARCH_PROVIDER=bing_yahoo_ssh
+BC250_BING_SSH_HOST=sam-mba15
+BC250_YAHOO_SSH_HOST=sam-mbp-rev
+```
+
+This is a distinct combined-provider stratum. The adapter fails open to one
+healthy engine and records both SSH transport configurations in the run lock.
+
 ## 5. Configure grading
 
 The smoke profile uses the deterministic diagnostic grader. The headline profile requires the semantic LLM grader.

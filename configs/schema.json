@@ -837,6 +837,7 @@
           "default": "brave",
           "enum": [
             "bing_ssh",
+            "bing_yahoo_ssh",
             "brave",
             "brave_ssh",
             "google_chrome",

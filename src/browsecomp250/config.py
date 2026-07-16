@@ -115,6 +115,7 @@ class ModelConfig(StrictConfigModel):
 class SearchConfig(StrictConfigModel):
     provider: Literal[
         "bing_ssh",
+        "bing_yahoo_ssh",
         "brave",
         "brave_ssh",
         "google_chrome",
@@ -194,6 +195,7 @@ class SearchConfig(StrictConfigModel):
     def selected_api_key(self) -> str:
         return {
             "bing_ssh": "",
+            "bing_yahoo_ssh": "",
             "brave": self.brave_api_key,
             "brave_ssh": "",
             "google_chrome": "",

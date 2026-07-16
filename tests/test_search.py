@@ -8,6 +8,7 @@ import pytest
 from browsecomp250.config import SearchConfig
 from browsecomp250.search.base import SearchError
 from browsecomp250.search.bing_ssh import BingSSHSearchProvider
+from browsecomp250.search.bing_yahoo_ssh import BingYahooSSHSearchProvider
 from browsecomp250.search.brave import BraveSearchProvider
 from browsecomp250.search.brave_ssh import BraveSSHSearchProvider
 from browsecomp250.search.google_chrome import GoogleChromeSearchProvider
@@ -810,3 +811,43 @@ def test_hybrid_merge_interleaves_and_deduplicates() -> None:
         "https://example.test/a",
         "https://example.test/b",
     ]
+
+
+def test_bing_yahoo_merge_interleaves_deduplicates_and_preserves_source() -> None:
+    bing = [
+        SearchResult(title="Bing A", url="https://www.example.test/a/", source="bing_ssh"),
+        SearchResult(title="Bing B", url="https://example.test/b", source="bing_ssh"),
+    ]
+    yahoo = [
+        SearchResult(title="Yahoo A", url="https://example.test/a", source="yahoo_ssh"),
+        SearchResult(title="Yahoo C", url="https://example.test/c", source="yahoo_ssh"),
+    ]
+
+    merged = BingYahooSSHSearchProvider._merge_or_error(bing, yahoo, 10)
+
+    assert isinstance(merged, list)
+    assert [(item.url, item.source, item.rank) for item in merged] == [
+        ("https://www.example.test/a/", "bing_ssh", 1),
+        ("https://example.test/b", "bing_ssh", 2),
+        ("https://example.test/c", "yahoo_ssh", 3),
+    ]
+
+
+def test_bing_yahoo_merge_uses_one_healthy_engine() -> None:
+    yahoo = [SearchResult(title="Yahoo", url="https://example.test/y", source="yahoo_ssh")]
+
+    merged = BingYahooSSHSearchProvider._merge_or_error(
+        SearchError("bing unavailable"), yahoo, 10
+    )
+
+    assert isinstance(merged, list)
+    assert [item.url for item in merged] == ["https://example.test/y"]
+
+
+def test_bing_yahoo_merge_reports_both_engine_failures() -> None:
+    merged = BingYahooSSHSearchProvider._merge_or_error(
+        SearchError("bing unavailable"), SearchError("yahoo unavailable"), 10
+    )
+
+    assert isinstance(merged, SearchError)
+    assert "Both server-side search engines failed" in str(merged)

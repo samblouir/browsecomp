@@ -135,6 +135,13 @@ feeds, doctypes, empty result sets, oversized responses, and non-HTTP result
 links. Its host, pacing, concurrency, and timeout limits are frozen in the run
 lock, so Bing and Yahoo rows remain separately attributable benchmark strata.
 
+`bing_yahoo_ssh` queries both server-side adapters concurrently and interleaves
+their organic results after canonical-URL deduplication. It does not launch or
+control a user browser. If one engine fails, the other engine's valid results
+remain usable; if both fail, the query fails with both transport errors. Its
+live preflight bypasses both child caches. Treat this combined provider as its
+own benchmark stratum rather than mixing it into Bing-only or Yahoo-only scores.
+
 Star-2 research helpers retain the full configured 16,384-token generation
 budget per turn. Their separate action, evidence, and elapsed-research limits
 force a final tool turn instead of allowing exploratory browsing to consume the

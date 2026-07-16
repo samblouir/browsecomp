@@ -5,6 +5,7 @@ import httpx
 from ..config import SearchConfig
 from .base import SearchProvider
 from .bing_ssh import BingSSHSearchProvider
+from .bing_yahoo_ssh import BingYahooSSHSearchProvider
 from .brave import BraveSearchProvider
 from .brave_ssh import BraveSSHSearchProvider
 from .google_chrome import GoogleChromeSearchProvider
@@ -23,6 +24,7 @@ def create_search_provider(
 ) -> SearchProvider:
     providers = {
         "bing_ssh": BingSSHSearchProvider,
+        "bing_yahoo_ssh": BingYahooSSHSearchProvider,
         "brave": BraveSearchProvider,
         "brave_ssh": BraveSSHSearchProvider,
         "google_chrome": GoogleChromeSearchProvider,
