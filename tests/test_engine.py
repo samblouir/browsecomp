@@ -72,6 +72,12 @@ class _FakeGrader(_FakeClosable):
         )
 
 
+class _FailingGrader(_FakeClosable):
+    async def grade(self, question: str, reference: str, response: str) -> GradeResult:
+        del question, reference, response
+        raise RuntimeError("grader transport unavailable")
+
+
 def _write_synthetic_dataset(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -137,12 +143,58 @@ async def test_engine_end_to_end_with_synthetic_dataset(monkeypatch, tmp_path: P
     assert status["finished"] == 2
     assert status["correct"] == 2
     assert status["incorrect"] == 0
+    assert status["graded_incorrect"] == 0
+    assert status["strict_incorrect"] == 0
     assert status["failed"] == 0
+    assert status["execution_failed"] == 0
     assert status["pending"] == 0
     assert status["accuracy_among_finished"] == 1.0
+    assert status["accuracy_among_graded"] == 1.0
     assert status["correct_fraction_of_assigned"] == 1.0
     assert public_summary["cost_breakdown_usd"]["model"] == pytest.approx(0.002)
     assert public_summary["cost_breakdown_usd"]["grader"] == pytest.approx(0.0002)
+
+
+@pytest.mark.asyncio
+async def test_engine_reports_grader_transport_failure_separately_from_wrong_answer(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import browsecomp250.run.engine as engine_module
+
+    cache_dir = tmp_path / "cache"
+    _write_synthetic_dataset(cache_dir / "browse_comp_test_set.csv")
+    repository_root = Path(__file__).parents[1]
+    config = AppConfig(
+        run=RunConfig(name="fixture-grader-failure", output_dir=tmp_path / "runs"),
+        dataset=DatasetConfig(
+            source_url="https://example.test/encrypted.csv",
+            cache_dir=cache_dir,
+            subset_indices_path=repository_root / "data" / "subset_indices.json",
+        ),
+        model=ModelConfig(api_base="https://model.test/v1", api_key="key", model="star"),
+        search=SearchConfig(provider="searxng", cache_path=tmp_path / "search.sqlite3"),
+        browser=BrowserConfig(cache_path=tmp_path / "pages.sqlite3"),
+        agent=AgentConfig(),
+        grader=GraderConfig(mode="deterministic"),
+        report=ReportConfig(bootstrap_samples=100),
+    )
+
+    monkeypatch.setattr(engine_module, "AgentRunner", _FakeAgentRunner)
+    monkeypatch.setattr(engine_module, "OpenAICompatibleClient", _FakeClosable)
+    monkeypatch.setattr(engine_module, "create_search_provider", lambda config: _FakeClosable())
+    monkeypatch.setattr(engine_module, "PageFetcher", _FakeClosable)
+    monkeypatch.setattr(engine_module, "Grader", _FailingGrader)
+
+    await BenchmarkEngine(config).run(limit=1)
+    status = json.loads((tmp_path / "runs" / "fixture-grader-failure" / "status.json").read_text())
+    assert status["finished"] == 1
+    assert status["correct"] == 0
+    assert status["incorrect"] == 0
+    assert status["graded_incorrect"] == 0
+    assert status["strict_incorrect"] == 1
+    assert status["failed"] == 1
+    assert status["accuracy_among_finished"] == 0
+    assert status["accuracy_among_graded"] is None
 
 
 @pytest.mark.asyncio
@@ -387,6 +439,30 @@ async def test_engine_rejects_placeholder_grader_key_before_writing_lock(
     with pytest.raises(RuntimeError, match="grader API key is a placeholder"):
         await BenchmarkEngine(config).run(limit=1)
     assert not (tmp_path / "runs" / "fixture-placeholder-key" / "run.lock.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_engine_rejects_openrouter_key_for_openai_grader_before_lock(
+    tmp_path: Path,
+) -> None:
+    config = AppConfig(
+        run=RunConfig(name="fixture-mismatched-grader-key", output_dir=tmp_path / "runs"),
+        dataset=DatasetConfig(),
+        model=ModelConfig(api_base="https://model.test/v1", api_key="key", model="star"),
+        search=SearchConfig(provider="searxng", cache_path=tmp_path / "search.sqlite3"),
+        browser=BrowserConfig(cache_path=tmp_path / "pages.sqlite3"),
+        agent=AgentConfig(),
+        grader=GraderConfig(
+            mode="official_llm",
+            api_base="https://api.openai.com/v1",
+            api_key="sk-or-v1-not-an-openai-key",
+        ),
+        report=ReportConfig(),
+    )
+
+    with pytest.raises(RuntimeError, match="OpenRouter key but grader endpoint is api.openai.com"):
+        await BenchmarkEngine(config).run(limit=1)
+    assert not (tmp_path / "runs" / "fixture-mismatched-grader-key" / "run.lock.json").exists()
 
 
 @pytest.mark.asyncio

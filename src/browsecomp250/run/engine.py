@@ -7,6 +7,7 @@ from contextlib import AsyncExitStack
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from ..agent import AgentRunner
 from ..agent_external import AgentExternalModelBroker
@@ -66,6 +67,11 @@ class BenchmarkEngine:
                 problems.append("grader API key is empty")
             elif self.config.grader.api_key and is_placeholder_secret(self.config.grader.api_key):
                 problems.append("grader API key is a placeholder")
+            grader_host = (urlsplit(self.config.grader.api_base).hostname or "").casefold()
+            if grader_host == "api.openai.com" and self.config.grader.api_key.startswith("sk-or-"):
+                problems.append(
+                    "grader API key is an OpenRouter key but grader endpoint is api.openai.com"
+                )
 
         if self.config.external_model.enabled and self.config.external_model.mode == "agent":
             agent_key = self.config.external_model.agent_api_key
@@ -241,7 +247,10 @@ class BenchmarkEngine:
         assigned = len(items) * self.config.run.attempts
         initial_correct = sum(row.get("correct") is True for row in existing_by_key.values())
         initial_finished = len(completed)
-        initial_incorrect = initial_finished - initial_correct
+        initial_graded_incorrect = sum(
+            row.get("status") == "completed" and row.get("correct") is False
+            for row in existing_by_key.values()
+        )
         initial_failed = sum(row.get("status") != "completed" for row in existing_by_key.values())
 
         self.storage.update_status(
@@ -252,11 +261,19 @@ class BenchmarkEngine:
             completed=initial_finished,
             finished=initial_finished,
             correct=initial_correct,
-            incorrect=initial_incorrect,
+            incorrect=initial_graded_incorrect,
+            graded_incorrect=initial_graded_incorrect,
+            strict_incorrect=initial_finished - initial_correct,
             failed=initial_failed,
+            execution_failed=initial_failed,
             pending=assigned - initial_finished,
             accuracy_among_finished=(
                 initial_correct / initial_finished if initial_finished else None
+            ),
+            accuracy_among_graded=(
+                initial_correct / (initial_correct + initial_graded_incorrect)
+                if initial_correct + initial_graded_incorrect
+                else None
             ),
             correct_fraction_of_assigned=(initial_correct / assigned if assigned else None),
             remaining=len(work),
@@ -288,7 +305,7 @@ class BenchmarkEngine:
         progress = {
             "finished": initial_finished,
             "correct": initial_correct,
-            "incorrect": initial_incorrect,
+            "graded_incorrect": initial_graded_incorrect,
             "failed": initial_failed,
         }
 
@@ -299,11 +316,19 @@ class BenchmarkEngine:
                 completed=finished,
                 finished=finished,
                 correct=progress["correct"],
-                incorrect=progress["incorrect"],
+                incorrect=progress["graded_incorrect"],
+                graded_incorrect=progress["graded_incorrect"],
+                strict_incorrect=finished - progress["correct"],
                 failed=progress["failed"],
+                execution_failed=progress["failed"],
                 pending=max(0, assigned - finished),
                 remaining=max(0, assigned - finished),
                 accuracy_among_finished=(progress["correct"] / finished if finished else None),
+                accuracy_among_graded=(
+                    progress["correct"] / (progress["correct"] + progress["graded_incorrect"])
+                    if progress["correct"] + progress["graded_incorrect"]
+                    else None
+                ),
                 correct_fraction_of_assigned=(progress["correct"] / assigned if assigned else None),
                 active_trials=dict(active_trials),
                 last_event=last_event,
@@ -372,16 +397,15 @@ class BenchmarkEngine:
                         event_sink=event_sink,
                     )
                     progress["finished"] += 1
-                    if record.correct is True:
-                        progress["correct"] += 1
-                    else:
-                        progress["incorrect"] += 1
-                    if record.status not in {"completed"}:
+                    if record.status != "completed":
                         progress["failed"] += 1
                         failures.append(f"{trial_key}: status={record.status}")
+                    elif record.correct is True:
+                        progress["correct"] += 1
+                    else:
+                        progress["graded_incorrect"] += 1
                 except Exception as exc:  # noqa: BLE001
                     progress["finished"] += 1
-                    progress["incorrect"] += 1
                     progress["failed"] += 1
                     failures.append(f"{trial_key}: {exc}")
                     if self.config.run.fail_fast:
@@ -411,12 +435,20 @@ class BenchmarkEngine:
                 completed=progress["finished"],
                 finished=progress["finished"],
                 correct=progress["correct"],
-                incorrect=progress["incorrect"],
+                incorrect=progress["graded_incorrect"],
+                graded_incorrect=progress["graded_incorrect"],
+                strict_incorrect=progress["finished"] - progress["correct"],
                 failed=progress["failed"],
+                execution_failed=progress["failed"],
                 pending=max(0, assigned - progress["finished"]),
                 remaining=max(0, assigned - progress["finished"]),
                 accuracy_among_finished=(
                     progress["correct"] / progress["finished"] if progress["finished"] else None
+                ),
+                accuracy_among_graded=(
+                    progress["correct"] / (progress["correct"] + progress["graded_incorrect"])
+                    if progress["correct"] + progress["graded_incorrect"]
+                    else None
                 ),
                 correct_fraction_of_assigned=(progress["correct"] / assigned if assigned else None),
                 active_trials={},
@@ -465,12 +497,20 @@ class BenchmarkEngine:
             completed=progress["finished"],
             finished=progress["finished"],
             correct=progress["correct"],
-            incorrect=progress["incorrect"],
+            incorrect=progress["graded_incorrect"],
+            graded_incorrect=progress["graded_incorrect"],
+            strict_incorrect=progress["finished"] - progress["correct"],
             failed=progress["failed"],
+            execution_failed=progress["failed"],
             pending=0,
             remaining=0,
             accuracy_among_finished=(
                 progress["correct"] / progress["finished"] if progress["finished"] else None
+            ),
+            accuracy_among_graded=(
+                progress["correct"] / (progress["correct"] + progress["graded_incorrect"])
+                if progress["correct"] + progress["graded_incorrect"]
+                else None
             ),
             correct_fraction_of_assigned=(progress["correct"] / assigned if assigned else None),
             active_trials={},
