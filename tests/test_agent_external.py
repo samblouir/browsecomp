@@ -7,12 +7,30 @@ import pytest
 
 from browsecomp250.agent_external import AgentExternalModelBroker
 from browsecomp250.config import AgentConfig, BrowserConfig, ExternalModelConfig
-from browsecomp250.types import AgentOutcome, Usage
+from browsecomp250.types import AgentOutcome, ModelResponse, Usage
 
 
 class _FakeModelClient:
     async def close(self) -> None:
         return None
+
+
+class _FakeReviewClient(_FakeModelClient):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def chat(self, messages, **kwargs) -> ModelResponse:
+        self.calls.append({"messages": messages, **kwargs})
+        return ModelResponse(
+            content=(
+                '{"verdict":"ON_TRACK","observed_stage":"source opening",'
+                '"followed":["opened target"],"material_deviations":[],'
+                '"required_next_actions":[],"reason":"The plan is being followed."}'
+            ),
+            usage=Usage(input_tokens=25, output_tokens=12),
+            response_id="review-response-1",
+            raw_message={"reasoning": "Checked the action trace against the plan."},
+        )
 
 
 class _FakeRunner:
@@ -230,6 +248,44 @@ async def test_agent_external_strategy_skips_factual_answer_evidence_gates() -> 
     assert config["agent"].max_steps == 4
     assert "retrieval-strategy controller" in config["kwargs"]["system_prompt"]
     assert config["kwargs"]["initial_force_final"] is True
+
+
+@pytest.mark.asyncio
+async def test_agent_external_review_uses_direct_star2_call_without_research_loop() -> None:
+    _FakeRunner.configurations = []
+    client = _FakeReviewClient()
+    broker = AgentExternalModelBroker(
+        ExternalModelConfig(enabled=True, mode="agent", agent_api_key="real-key"),
+        AgentConfig(),
+        BrowserConfig(),
+        search_provider=object(),
+        page_fetcher=object(),
+        model_client=client,
+        runner_factory=_FakeRunner,
+    )
+
+    result = await broker.ask_many(
+        [
+            {
+                "task_mode": "review",
+                "system": "Act as a blocking reviewer.",
+                "query": "Return one JSON verdict.",
+                "context": '{"step":2}',
+            }
+        ],
+        request_namespace="test:review",
+    )
+
+    assert result[0]["ok"] is True
+    assert result[0]["request_id"] == "review-response-1"
+    assert result[0]["reasoning"] == "Checked the action trace against the plan."
+    assert result[0]["usage"]["total_tokens"] == 37
+    assert len(client.calls) == 1
+    assert client.calls[0]["request_headers"]["X-FRL-Conversation-Id"].startswith(
+        "bc250-review-"
+    )
+    assert "synchronous review-only call" in client.calls[0]["messages"][0]["content"]
+    assert _FakeRunner.configurations == []
 
 
 def test_agent_external_broker_extracts_executed_search_queries() -> None:

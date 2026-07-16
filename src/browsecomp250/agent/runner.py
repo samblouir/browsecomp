@@ -220,6 +220,11 @@ class AgentRunner:
         question: str,
         *,
         request_namespace: str | None = None,
+        initial_guidance: str | None = None,
+        scripted_guidance_steps: list[dict[str, Any]] | None = None,
+        blocking_guidance_adversary: bool = False,
+        guidance_adversary_interval_steps: int = 8,
+        guidance_adversary_max_checkpoints: int = 2,
     ) -> AgentOutcome:
         started = time.perf_counter()
         usage = Usage()
@@ -244,7 +249,12 @@ class AgentRunner:
         last_successful_search_result: dict[str, Any] | None = None
         search_query_history: list[str] = []
         pending_surface_constraint_correction: str | None = None
-        chain_enabled = self.model_config.response_chain
+        pending_guidance_block: dict[str, Any] | None = None
+        scripted_step_index = 0
+        scripted_final_context_recorded = False
+        guidance_adversary_checkpoints = 0
+        guidance_final_reviews: dict[str, dict[str, Any]] = {}
+        chain_enabled = self.model_config.response_chain and not scripted_guidance_steps
         previous_response_id: str | None = None
         chain_delta_messages: list[dict[str, Any]] | None = None
         namespace_material = request_namespace or question
@@ -255,8 +265,12 @@ class AgentRunner:
         chain_namespace = request_headers["X-FRL-Conversation-Id"].removeprefix("bc250-")
         external_namespace = request_namespace or chain_namespace
 
+        guidance_block = ""
+        if initial_guidance and initial_guidance.strip():
+            guidance_block = "Research plan:\n" + initial_guidance.strip() + "\n\n"
         initial_user = (
-            "Question:\n"
+            guidance_block
+            + "Question:\n"
             + question
             + "\n\nBudgets: "
             + canonical_json(
@@ -288,6 +302,86 @@ class AgentRunner:
             if time.perf_counter() - started > 0.98 * 3600:
                 errors.append("Agent exceeded internal one-hour safety limit")
                 break
+            current_scripted_step: dict[str, Any] | None = None
+            scripted_force_final = False
+            if scripted_guidance_steps and scripted_step_index < len(scripted_guidance_steps):
+                current_scripted_step = scripted_guidance_steps[scripted_step_index]
+                scripted_force_final = {
+                    str(value).strip()
+                    for value in current_scripted_step.get("allowed_actions", [])
+                    if str(value).strip()
+                } == {"final"}
+                scripted_message = {
+                    "role": "system",
+                    "content": (
+                        "Teacher-forced research step "
+                        f"{scripted_step_index + 1}/{len(scripted_guidance_steps)}. "
+                        "This controller instruction is not factual evidence. Execute exactly one "
+                        "tool action satisfying this contract on this turn. Do not skip ahead, "
+                        "substitute a different action, or finalize early.\n"
+                        + canonical_json(current_scripted_step)
+                    ),
+                }
+                messages.append(scripted_message)
+                transcript.append(scripted_message)
+                if chain_delta_messages is not None:
+                    chain_delta_messages.append(scripted_message)
+                self._emit(
+                    "scripted_guidance_step_started",
+                    step=step,
+                    scripted_step_index=scripted_step_index,
+                    scripted_step=current_scripted_step,
+                )
+            checkpoint_due = bool(
+                blocking_guidance_adversary
+                and initial_guidance
+                and guidance_adversary_interval_steps > 0
+                and step > 1
+                and (step - 1) % guidance_adversary_interval_steps == 0
+                and guidance_adversary_checkpoints < guidance_adversary_max_checkpoints
+                and self.external_model is not None
+                and self.external_model_config.enabled
+            )
+            if checkpoint_due:
+                self._emit(
+                    "blocking_guidance_adversary_started",
+                    step=step,
+                    phase="checkpoint",
+                )
+                review = await self._blocking_guidance_adversary_review(
+                    question=question,
+                    guidance=initial_guidance or "",
+                    messages=messages,
+                    notes=notes,
+                    opened=opened,
+                    search_queries=search_query_history,
+                    request_namespace=external_namespace,
+                    phase="checkpoint",
+                )
+                guidance_adversary_checkpoints += 1
+                external_model_calls += int(review.get("attempted") or 1)
+                last_external_completion_at = time.perf_counter()
+                pending_guidance_block = (
+                    review if str(review.get("verdict") or "").upper() == "BLOCK" else None
+                )
+                pending_message = self._attach_blocking_guidance_review(messages, review)
+                chain_delta_messages = [pending_message]
+                transcript.append(
+                    {
+                        "role": "assistant",
+                        "name": "blocking_plan_adversary",
+                        "content": canonical_json(review),
+                    }
+                )
+                self._emit(
+                    "blocking_guidance_adversary_completed",
+                    step=step,
+                    phase="checkpoint",
+                    verdict=review.get("verdict"),
+                    request_id=review.get("request_id"),
+                    required_next_actions=review.get("required_next_actions"),
+                    review=review,
+                )
             messages = self._compact_history(messages, initial_user, notes, opened)
             self._emit(
                 "turn_started",
@@ -301,6 +395,69 @@ class AgentRunner:
             try:
                 wire_messages = messages
                 chain_body: dict[str, Any] = {}
+                if scripted_force_final:
+                    opened_evidence = [
+                        {
+                            "url": document.final_url,
+                            "title": document.title,
+                            "text": truncate_middle(document.text, 12_000),
+                        }
+                        for document in list(opened.values())[-12:]
+                    ]
+                    final_system = (
+                        "You are the final synthesis stage of a completed research trajectory. "
+                        "All retrieval is finished and the only available action is final. Read "
+                        "the supplied original question and inspected public evidence, reason "
+                        "carefully, then call the final tool exactly once. Set exact_answer to "
+                        "only the requested concrete answer, include a concise evidence-based "
+                        "explanation, calibrated confidence, and inspected citation URLs. Never "
+                        "emit, request, describe, or simulate a search, open, note, or helper call."
+                    )
+                    final_user = (
+                        "Research plan:\n"
+                        + (initial_guidance or "")
+                        + "\n\nOriginal question:\n"
+                        + question
+                        + "\n\nFinal step contract:\n"
+                        + canonical_json(current_scripted_step or {})
+                        + "\n\nInspected public source evidence:\n"
+                        + canonical_json(opened_evidence)
+                        + "\n\nLatest verification-search evidence:\n"
+                        + truncate_middle(
+                            canonical_json(last_successful_search_result or {}),
+                            30_000,
+                        )
+                    )
+                    wire_messages = [
+                        {"role": "system", "content": final_system},
+                        {"role": "user", "content": final_user},
+                    ]
+                    messages = list(wire_messages)
+                    chain_body = {}
+                    if not scripted_final_context_recorded:
+                        transcript.extend(
+                            [
+                                {
+                                    "role": "system",
+                                    "name": "scripted_final_context_reset",
+                                    "content": final_system,
+                                },
+                                {
+                                    "role": "user",
+                                    "name": "scripted_final_evidence",
+                                    "content": final_user,
+                                },
+                            ]
+                        )
+                        scripted_final_context_recorded = True
+                    self._emit(
+                        "scripted_guidance_final_context_built",
+                        step=step,
+                        opened_source_count=len(opened_evidence),
+                        context_chars=sum(
+                            len(str(message.get("content") or "")) for message in wire_messages
+                        ),
+                    )
                 if chain_enabled:
                     chain_body = {
                         "frontierrl_messages_mode": "delta" if previous_response_id else "full",
@@ -316,6 +473,7 @@ class AgentRunner:
                 query_started = time.perf_counter()
                 force_final_this_turn = (
                     force_final
+                    or scripted_force_final
                     or (
                         self.agent_config.force_final_after_seconds > 0
                         and time.perf_counter() - started
@@ -582,6 +740,124 @@ class AgentRunner:
                 )
             self._emit("action_selected", step=step, action=action.action, payload=action.payload)
 
+            if current_scripted_step is not None and not self._action_matches_scripted_step(
+                action,
+                current_scripted_step,
+            ):
+                correction = (
+                    "The teacher-forced guide rejected this action. Execute exactly the current "
+                    "step contract before advancing: "
+                    + canonical_json(current_scripted_step)
+                )
+                errors.append(correction)
+                raw_tool_calls = assistant_message.get("tool_calls")
+                if (
+                    protocol in {"tools", "auto"}
+                    and isinstance(raw_tool_calls, list)
+                    and raw_tool_calls
+                ):
+                    messages.append(assistant_message)
+                    rejected_tool_call = raw_tool_calls[0]
+                    correction_message = {
+                        "role": "tool",
+                        "tool_call_id": rejected_tool_call.get("id", f"call-{step}"),
+                        "name": str(
+                            (rejected_tool_call.get("function") or {}).get("name")
+                            or action.action
+                        ),
+                        "content": canonical_json(
+                            {
+                                "ok": False,
+                                "error": correction,
+                                "scripted_guidance_step": current_scripted_step,
+                            }
+                        ),
+                    }
+                    messages.append(correction_message)
+                    transcript.append(correction_message)
+                    chain_delta_messages = [correction_message]
+                else:
+                    messages.append({"role": "assistant", "content": response.content})
+                    correction_message = {"role": "system", "content": correction}
+                    messages.append(correction_message)
+                    transcript.append(correction_message)
+                    chain_delta_messages = [correction_message]
+                self._emit(
+                    "scripted_guidance_action_rejected",
+                    step=step,
+                    action=action.action,
+                    scripted_step_index=scripted_step_index,
+                    scripted_step=current_scripted_step,
+                )
+                continue
+            if current_scripted_step is not None:
+                self._emit(
+                    "scripted_guidance_action_accepted",
+                    step=step,
+                    action=action.action,
+                    scripted_step_index=scripted_step_index,
+                )
+
+            if pending_guidance_block is not None:
+                if not self._action_repairs_blocking_guidance_review(
+                    action,
+                    pending_guidance_block,
+                ):
+                    required_actions = pending_guidance_block.get("required_next_actions") or []
+                    correction = (
+                        "This action is blocked because it does not execute the blocking "
+                        "plan-adherence review's required next action. Required next actions: "
+                        + canonical_json(required_actions)
+                        + ". Choose a compliant tool action now."
+                    )
+                    errors.append(correction)
+                    raw_tool_calls = assistant_message.get("tool_calls")
+                    if (
+                        protocol in {"tools", "auto"}
+                        and isinstance(raw_tool_calls, list)
+                        and raw_tool_calls
+                    ):
+                        messages.append(assistant_message)
+                        rejected_tool_call = raw_tool_calls[0]
+                        correction_message = {
+                            "role": "tool",
+                            "tool_call_id": rejected_tool_call.get("id", f"call-{step}"),
+                            "name": str(
+                                (rejected_tool_call.get("function") or {}).get("name")
+                                or action.action
+                            ),
+                            "content": canonical_json(
+                                {
+                                    "ok": False,
+                                    "error": correction,
+                                    "blocking_plan_adversary": pending_guidance_block,
+                                }
+                            ),
+                        }
+                        messages.append(correction_message)
+                        transcript.append(correction_message)
+                        chain_delta_messages = [correction_message]
+                    else:
+                        messages.append({"role": "assistant", "content": response.content})
+                        correction_message = {"role": "system", "content": correction}
+                        messages.append(correction_message)
+                        transcript.append(correction_message)
+                        chain_delta_messages = [correction_message]
+                    self._emit(
+                        "blocking_guidance_action_rejected",
+                        step=step,
+                        action=action.action,
+                        required_next_actions=required_actions,
+                    )
+                    continue
+                self._emit(
+                    "blocking_guidance_repair_action_accepted",
+                    step=step,
+                    action=action.action,
+                    required_next_actions=pending_guidance_block.get("required_next_actions"),
+                )
+                pending_guidance_block = None
+
             if (
                 action.action == "final"
                 and search_calls < self.agent_config.min_search_calls_before_final
@@ -805,6 +1081,97 @@ class AgentRunner:
                                 violations=evidence_errors,
                             )
                             continue
+                if (
+                    blocking_guidance_adversary
+                    and initial_guidance
+                    and self.external_model is not None
+                    and self.external_model_config.enabled
+                ):
+                    final_fingerprint = canonical_json(action.payload)
+                    adversary_review = guidance_final_reviews.get(final_fingerprint)
+                    if adversary_review is None:
+                        self._emit(
+                            "blocking_guidance_adversary_started",
+                            step=step,
+                            phase="final",
+                        )
+                        adversary_review = await self._blocking_guidance_adversary_review(
+                            question=question,
+                            guidance=initial_guidance,
+                            messages=messages,
+                            notes=notes,
+                            opened=opened,
+                            search_queries=search_query_history,
+                            request_namespace=external_namespace,
+                            phase="final",
+                            proposed_final=action.payload,
+                        )
+                        guidance_final_reviews[final_fingerprint] = adversary_review
+                        external_model_calls += int(adversary_review.get("attempted") or 1)
+                        last_external_completion_at = time.perf_counter()
+                        transcript.append(
+                            {
+                                "role": "assistant",
+                                "name": "blocking_plan_adversary",
+                                "content": canonical_json(adversary_review),
+                            }
+                        )
+                    verdict = str(adversary_review.get("verdict") or "BLOCK").upper()
+                    self._emit(
+                        "blocking_guidance_adversary_completed",
+                        step=step,
+                        phase="final",
+                        verdict=verdict,
+                        request_id=adversary_review.get("request_id"),
+                        required_next_actions=adversary_review.get("required_next_actions"),
+                        review=adversary_review,
+                    )
+                    if verdict != "PASS":
+                        required_actions = adversary_review.get("required_next_actions") or []
+                        correction = (
+                            "The blocking plan-adherence adversary rejected this final. "
+                            + str(adversary_review.get("reason") or "Material plan steps remain unverified.")
+                            + " Required next actions: "
+                            + canonical_json(required_actions)
+                            + ". Complete those actions using public evidence, then propose a new final."
+                        )
+                        errors.append(correction)
+                        raw_tool_calls = assistant_message.get("tool_calls")
+                        if (
+                            protocol in {"tools", "auto"}
+                            and isinstance(raw_tool_calls, list)
+                            and raw_tool_calls
+                        ):
+                            messages.append(assistant_message)
+                            rejected_tool_call = raw_tool_calls[0]
+                            correction_message = {
+                                "role": "tool",
+                                "tool_call_id": rejected_tool_call.get("id", f"call-{step}"),
+                                "name": str(
+                                    (rejected_tool_call.get("function") or {}).get("name")
+                                    or "final"
+                                ),
+                                "content": canonical_json(
+                                    {
+                                        "ok": False,
+                                        "error": correction,
+                                        "blocking_plan_adversary": adversary_review,
+                                    }
+                                ),
+                            }
+                        else:
+                            messages.append({"role": "assistant", "content": response.content})
+                            correction_message = {"role": "user", "content": correction}
+                        messages.append(correction_message)
+                        transcript.append(correction_message)
+                        chain_delta_messages = [correction_message]
+                        self._emit(
+                            "blocking_guidance_final_rejected",
+                            step=step,
+                            verdict=verdict,
+                            required_next_actions=required_actions,
+                        )
+                        continue
                 outcome = self._final_outcome(
                     action,
                     started=started,
@@ -971,6 +1338,79 @@ class AgentRunner:
                             "automatic_finalization_rescue_rejected",
                             step=step,
                             violations=violations,
+                            result=rescue_result,
+                        )
+                if (
+                    rescue_action is not None
+                    and blocking_guidance_adversary
+                    and initial_guidance
+                    and self.external_model is not None
+                    and self.external_model_config.enabled
+                ):
+                    final_fingerprint = canonical_json(rescue_action.payload)
+                    adversary_review = guidance_final_reviews.get(final_fingerprint)
+                    if adversary_review is None:
+                        self._emit(
+                            "blocking_guidance_adversary_started",
+                            step=step,
+                            phase="final_rescue",
+                        )
+                        adversary_review = await self._blocking_guidance_adversary_review(
+                            question=question,
+                            guidance=initial_guidance,
+                            messages=messages,
+                            notes=notes,
+                            opened=opened,
+                            search_queries=search_query_history,
+                            request_namespace=external_namespace,
+                            phase="final_rescue",
+                            proposed_final=rescue_action.payload,
+                        )
+                        guidance_final_reviews[final_fingerprint] = adversary_review
+                        external_model_calls += int(adversary_review.get("attempted") or 1)
+                        last_external_completion_at = time.perf_counter()
+                        transcript.append(
+                            {
+                                "role": "assistant",
+                                "name": "blocking_plan_adversary",
+                                "content": canonical_json(adversary_review),
+                            }
+                        )
+                    verdict = str(adversary_review.get("verdict") or "BLOCK").upper()
+                    self._emit(
+                        "blocking_guidance_adversary_completed",
+                        step=step,
+                        phase="final_rescue",
+                        verdict=verdict,
+                        request_id=adversary_review.get("request_id"),
+                        required_next_actions=adversary_review.get("required_next_actions"),
+                        review=adversary_review,
+                    )
+                    if verdict != "PASS":
+                        required_actions = adversary_review.get("required_next_actions") or []
+                        pending_surface_constraint_correction = (
+                            "The blocking plan-adherence adversary rejected the independent "
+                            "finalizer's proposal. "
+                            + str(
+                                adversary_review.get("reason")
+                                or "Material plan steps remain unverified."
+                            )
+                            + " Required next actions: "
+                            + canonical_json(required_actions)
+                            + ". Complete those actions using public evidence before finalizing."
+                        )
+                        errors.append(pending_surface_constraint_correction)
+                        rescue_result = {
+                            **rescue_result,
+                            "ok": False,
+                            "error": pending_surface_constraint_correction,
+                            "blocking_plan_adversary": adversary_review,
+                        }
+                        rescue_action = None
+                        self._emit(
+                            "automatic_finalization_rescue_rejected",
+                            step=step,
+                            violations=[pending_surface_constraint_correction],
                             result=rescue_result,
                         )
                 if rescue_action is not None:
@@ -1619,6 +2059,25 @@ class AgentRunner:
                 result=result,
             )
 
+            if current_scripted_step is not None:
+                if result.get("ok") or current_scripted_step.get("advance_on_attempt") is True:
+                    self._emit(
+                        "scripted_guidance_step_completed",
+                        step=step,
+                        action=action.action,
+                        scripted_step_index=scripted_step_index,
+                        action_succeeded=bool(result.get("ok")),
+                    )
+                    scripted_step_index += 1
+                else:
+                    self._emit(
+                        "scripted_guidance_step_retry",
+                        step=step,
+                        action=action.action,
+                        scripted_step_index=scripted_step_index,
+                        error=result.get("error"),
+                    )
+
             if self._near_budget(
                 search_calls,
                 page_opens,
@@ -1900,6 +2359,279 @@ class AgentRunner:
             if len(accepted) >= limit:
                 break
         return accepted
+
+    @staticmethod
+    def _attach_blocking_guidance_review(
+        messages: list[dict[str, Any]], review: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Attach a synchronous review to the pending tool result when possible."""
+        if messages and messages[-1].get("role") == "tool":
+            pending = messages[-1]
+            content = str(pending.get("content") or "")
+            try:
+                payload = json.loads(content)
+            except json.JSONDecodeError:
+                payload = {"prior_tool_result": truncate_middle(content, 60_000)}
+            if not isinstance(payload, dict):
+                payload = {"prior_tool_result": payload}
+            payload["blocking_plan_adversary"] = review
+            pending["content"] = truncate_middle(
+                json.dumps(payload, ensure_ascii=False),
+                80_000,
+            )
+            if str(review.get("verdict") or "").upper() != "BLOCK":
+                return pending
+
+        controller_message = {
+            "role": "system",
+            "content": (
+                "Synchronous blocking plan-adherence review:\n"
+                + canonical_json(review)
+                + "\nThis checkpoint is blocked. The next substantive action must execute a "
+                "required_next_action that repairs the stated deviation. Do not merely "
+                "acknowledge the review, repeat the blocked action, or continue broad discovery."
+            ),
+        }
+        messages.append(controller_message)
+        return controller_message
+
+    @staticmethod
+    def _action_repairs_blocking_guidance_review(
+        action: AgentAction,
+        review: dict[str, Any],
+    ) -> bool:
+        required = review.get("required_next_actions")
+        if not isinstance(required, list) or not required:
+            return action.action != "final"
+        instruction = str(required[0]).strip().casefold()
+        if re.search(r"\b(open|inspect|read|visit|fetch)\b", instruction):
+            return action.action in {"open", "open_many"}
+        if re.search(r"\b(search|query|look up|discover|falsif|find source)\b", instruction):
+            return action.action in {"search", "search_many", "geo_search"}
+        if re.search(r"\b(consult|external|ask)\b", instruction):
+            return action.action == "ask_external_model"
+        if re.search(r"\b(note|record|ledger|save)\b", instruction):
+            return action.action == "note"
+        return action.action != "final"
+
+    @staticmethod
+    def _action_matches_scripted_step(
+        action: AgentAction,
+        scripted_step: dict[str, Any],
+    ) -> bool:
+        allowed = scripted_step.get("allowed_actions")
+        if not isinstance(allowed, list) or not allowed:
+            return False
+        allowed_actions = {str(value).strip() for value in allowed if str(value).strip()}
+        if action.action not in allowed_actions:
+            return False
+        required_urls = scripted_step.get("required_urls")
+        if not isinstance(required_urls, list) or not required_urls:
+            return True
+        supplied_urls: list[str] = []
+        url = action.payload.get("url")
+        if isinstance(url, str) and url.strip():
+            supplied_urls.append(url.strip())
+        urls = action.payload.get("urls")
+        if isinstance(urls, list):
+            supplied_urls.extend(str(value).strip() for value in urls if str(value).strip())
+
+        def normalize(value: str) -> str:
+            return value.strip().rstrip("/").casefold()
+
+        supplied = {normalize(value) for value in supplied_urls}
+        required = {normalize(str(value)) for value in required_urls if str(value).strip()}
+        return bool(required) and required.issubset(supplied)
+
+    @classmethod
+    def _blocking_guidance_review_payload(cls, result: dict[str, Any]) -> dict[str, Any]:
+        raw_content = str(result.get("content") or "")
+        objects = cls._json_objects(raw_content)
+        nested: list[dict[str, Any]] = []
+        for value in objects:
+            explanation = value.get("explanation")
+            if isinstance(explanation, str):
+                nested.extend(cls._json_objects(explanation))
+        for value in [*nested, *objects]:
+            verdict = str(value.get("verdict") or "").strip().upper()
+            verdict = {
+                "BLOCKED": "BLOCK",
+                "ON TRACK": "ON_TRACK",
+                "ON-TRACK": "ON_TRACK",
+            }.get(verdict, verdict)
+            if verdict not in {"PASS", "ON_TRACK", "CONTINUE", "BLOCK"}:
+                continue
+            required = value.get("required_next_actions")
+            if not isinstance(required, list):
+                required = []
+            return {
+                "ok": bool(result.get("ok")),
+                "verdict": verdict,
+                "observed_stage": str(value.get("observed_stage") or ""),
+                "followed": value.get("followed") if isinstance(value.get("followed"), list) else [],
+                "material_deviations": (
+                    value.get("material_deviations")
+                    if isinstance(value.get("material_deviations"), list)
+                    else []
+                ),
+                "required_next_actions": [str(item) for item in required if str(item).strip()],
+                "reason": str(value.get("reason") or ""),
+                "request_id": result.get("request_id"),
+                "attempted": 1,
+                "raw_review_content": truncate_middle(raw_content, 8_000),
+            }
+        textual_verdict = re.search(
+            r"(?i)\bverdict\b[\s`*_\"']*[:=\-][\s`*_\"']*"
+            r"(PASS|ON[ _-]?TRACK|CONTINUE|BLOCK(?:ED)?)\b",
+            raw_content,
+        )
+        if textual_verdict:
+            verdict = textual_verdict.group(1).upper().replace(" ", "_").replace("-", "_")
+            if verdict == "BLOCKED":
+                verdict = "BLOCK"
+            required = (
+                [
+                    "Execute the next unmet requirement in the supplied research plan, then "
+                    "request another review."
+                ]
+                if verdict == "BLOCK"
+                else []
+            )
+            return {
+                "ok": bool(result.get("ok")),
+                "verdict": verdict,
+                "observed_stage": "textual_review_fallback",
+                "followed": [],
+                "material_deviations": (
+                    [truncate_middle(raw_content, 4_000)] if verdict == "BLOCK" else []
+                ),
+                "required_next_actions": required,
+                "reason": truncate_middle(raw_content, 4_000),
+                "request_id": result.get("request_id"),
+                "attempted": 1,
+                "raw_review_content": truncate_middle(raw_content, 8_000),
+            }
+        return {
+            "ok": False,
+            "verdict": "BLOCK",
+            "observed_stage": "review_failed",
+            "followed": [],
+            "material_deviations": [
+                "The blocking adversary did not return a parseable verdict.",
+                truncate_middle(raw_content, 4_000),
+            ],
+            "required_next_actions": [
+                "Re-read the supplied plan, execute its next unmet requirement, and request "
+                "another blocking review."
+            ],
+            "reason": str(
+                result.get("error")
+                or raw_content
+                or "Invalid plan-adherence review response."
+            ),
+            "request_id": result.get("request_id"),
+            "attempted": 1,
+            "raw_review_content": truncate_middle(raw_content, 8_000),
+        }
+
+    async def _blocking_guidance_adversary_review(
+        self,
+        *,
+        question: str,
+        guidance: str,
+        messages: list[dict[str, Any]],
+        notes: list[str],
+        opened: dict[str, PageDocument],
+        search_queries: list[str],
+        request_namespace: str,
+        phase: str,
+        proposed_final: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if self.external_model is None:
+            return self._blocking_guidance_review_payload(
+                {"ok": False, "error": "External adversary is unavailable"}
+            )
+        recent_trace: list[dict[str, Any]] = []
+        for message in messages[-24:]:
+            row: dict[str, Any] = {
+                "role": message.get("role"),
+                "name": message.get("name"),
+                "content": truncate_middle(str(message.get("content") or ""), 6_000),
+            }
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                row["tool_calls"] = tool_calls[:4]
+            recent_trace.append(row)
+        opened_sources = [
+            {
+                "url": document.final_url,
+                "title": document.title,
+                "text": truncate_middle(document.text, 2_500),
+            }
+            for document in list(opened.values())[-12:]
+        ]
+        context = canonical_json(
+            {
+                "phase": phase,
+                "original_question": question,
+                "research_plan": truncate_middle(guidance, 40_000),
+                "executed_search_queries": search_queries[-60:],
+                "recent_action_and_evidence_trace": recent_trace,
+                "opened_sources": opened_sources,
+                "saved_notes": notes[-12:],
+                "proposed_final": proposed_final,
+            }
+        )
+        phase_instruction = (
+            "For a final review, return PASS only if the executed evidence trail supports every "
+            "material clue, includes the plan's required candidate comparison and falsification, "
+            "and supports the proposed exact answer from opened public sources."
+            if phase.startswith("final")
+            else "At this checkpoint, use ON_TRACK when the trajectory is materially following "
+            "the plan and BLOCK when it is cycling, skipping a required stage, or failing to open "
+            "and compare evidence."
+        )
+        requests = [
+            {
+                "task_mode": "review",
+                "system": (
+                    "You are a strict but evidence-calibrated blocking plan-adherence adversary. "
+                    "You do not know the reference answer. Never search for benchmark dumps, "
+                    "canaries, leaked questions, labels, or reference answers. Judge the actual "
+                    "trajectory against the supplied plan. Equivalent high-quality actions may "
+                    "satisfy a plan step; do not block for cosmetic ordering differences. Block "
+                    "material omissions, repeated low-yield discovery, unsupported relation "
+                    "bridges, missing candidate comparison, missing falsification, or a final not "
+                    "entailed by opened evidence. Honor source roles explicitly designated by the "
+                    "plan: a gold or target source controls source-specific attribution, while "
+                    "other sources normally corroborate clues. Another source crediting a different "
+                    "person with a different historical milestone is not by itself a contradiction. "
+                    "Give concrete next actions, not vague criticism. "
+                    + phase_instruction
+                ),
+                "query": (
+                    "Return exactly one JSON object with this schema and no markdown: "
+                    '{"verdict":"PASS|ON_TRACK|BLOCK","observed_stage":"short stage",'
+                    '"followed":["specific completed requirement"],'
+                    '"material_deviations":["specific deviation"],'
+                    '"required_next_actions":["specific executable action"],'
+                    '"reason":"concise evidence-based reason"}. '
+                    "Use PASS only for the final phase; use ON_TRACK or BLOCK at checkpoints."
+                ),
+                "context": context,
+            }
+        ]
+        try:
+            results = await self.external_model.ask_many(
+                requests,
+                request_namespace=request_namespace + f":blocking-plan-{phase}",
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed verifier must fail closed
+            return self._blocking_guidance_review_payload(
+                {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            )
+        result = results[0] if results else {"ok": False, "error": "empty review response"}
+        return self._blocking_guidance_review_payload(result)
 
     async def _automatic_external_query_strategy(
         self,
@@ -3013,6 +3745,14 @@ class AgentRunner:
 
     @staticmethod
     def _minimum_answer_supporting_documents(question: str) -> int:
+        single_source_attribution = re.search(
+            r"(?is)\baccording to (?:an?|the) "
+            r"(?:article|source|paper|report|page|publication|interview|profile)\b.*?"
+            r"\b(?:exactly as|as it appears|identified|credited|named|stated)\b",
+            question,
+        )
+        if single_source_attribution:
+            return 1
         sentences = [item for item in re.split(r"[.!?]+", question) if item.strip()]
         years = set(re.findall(r"\b(?:18|19|20)\d{2}\b", question))
         distance_clues = _GEO_DISTANCE_CLUE.findall(question)

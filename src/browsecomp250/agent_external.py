@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 from collections.abc import Callable
@@ -138,6 +139,12 @@ class AgentExternalModelBroker:
         system = str(request.get("system") or "").strip()
         context = str(request.get("context") or "").strip()
         task_mode = str(request.get("task_mode") or "research").strip().casefold()
+        if task_mode == "review":
+            return await self._ask_direct_review(
+                request,
+                request_namespace=request_namespace,
+                call_index=call_index,
+            )
         strategy_mode = task_mode == "strategy"
         helper_agent_config = self.agent_config
         if strategy_mode:
@@ -276,6 +283,74 @@ class AgentExternalModelBroker:
             events=events,
             require_citations=helper_agent_config.require_citations,
         )
+
+    async def _ask_direct_review(
+        self,
+        request: dict[str, Any],
+        *,
+        request_namespace: str,
+        call_index: int,
+    ) -> dict[str, Any]:
+        """Run a synchronous evidence review without wrapping it in a research-agent loop."""
+        query = str(request.get("query") or "").strip()
+        if not query:
+            return {
+                "ok": False,
+                "status": "failed",
+                "provider": "frontierrl-agent",
+                "model": self.model_config.model,
+                "error": "query is required",
+            }
+        system = str(request.get("system") or "").strip()
+        context = str(request.get("context") or "").strip()
+        namespace = f"{request_namespace}:star2-review:{call_index}"
+        conversation_id = "bc250-review-" + hashlib.sha256(
+            namespace.encode("utf-8")
+        ).hexdigest()[:24]
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    system
+                    + "\n\nThis is a synchronous review-only call. Do not browse or call tools. "
+                    "Return the requested verdict directly in the final answer."
+                ).strip(),
+            },
+            {
+                "role": "user",
+                "content": query + ("\n\nSupplied context:\n" + context if context else ""),
+            },
+        ]
+        try:
+            async with self._semaphore:
+                response = await self.client.chat(
+                    messages,
+                    request_headers={"X-FRL-Conversation-Id": conversation_id},
+                )
+        except Exception as exc:  # noqa: BLE001 - a review failure must fail closed
+            return {
+                "ok": False,
+                "status": "failed",
+                "request_id": namespace,
+                "provider": "frontierrl-agent",
+                "model": self.model_config.model,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        content = response.content.strip()
+        return {
+            "ok": bool(content),
+            "status": "succeeded" if content else "failed",
+            "request_id": response.response_id or namespace,
+            "provider": "frontierrl-agent",
+            "model": self.model_config.model,
+            "content": content,
+            "reasoning": response.raw_message.get("reasoning"),
+            "usage": {
+                "prompt_tokens": response.usage.input_tokens,
+                "completion_tokens": response.usage.output_tokens,
+                "total_tokens": response.usage.input_tokens + response.usage.output_tokens,
+            },
+        }
 
     def _partial_timeout_result(
         self,

@@ -125,9 +125,10 @@ class ToolAbstentionChainModel:
 class FinalCaptureModel:
     def __init__(self):
         self.kwargs = None
+        self.messages = None
 
     async def chat(self, messages, **kwargs):
-        del messages
+        self.messages = deepcopy(messages)
         self.kwargs = deepcopy(kwargs)
         return ModelResponse(
             content='{"action":"final","explanation":"best answer","exact_answer":"Answer","confidence":80,"citations":["https://example.test"]}'
@@ -168,6 +169,293 @@ async def test_agent_can_force_final_tool_on_first_turn(tmp_path: Path) -> None:
         "function": {"name": "final"},
     }
     assert [tool["function"]["name"] for tool in model.kwargs["tools"]] == ["final"]
+
+
+@pytest.mark.asyncio
+async def test_agent_can_add_initial_guidance_without_changing_question(tmp_path: Path) -> None:
+    model = FinalCaptureModel()
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="tools",
+        ),
+        AgentConfig(
+            max_steps=1,
+            min_search_calls_before_final=0,
+            require_citations=False,
+            require_opened_citation_support=False,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=model,
+        initial_force_final=True,
+    )
+
+    await runner.run(
+        "Which exact entity satisfies the clues?",
+        initial_guidance="First decompose every clue, then verify the candidate.",
+    )
+
+    assert model.messages[1]["content"].startswith(
+        "Research plan:\nFirst decompose every clue, then verify the candidate.\n\n"
+        "Question:\nWhich exact entity satisfies the clues?\n\nBudgets: "
+    )
+
+
+@pytest.mark.asyncio
+async def test_blocking_guidance_adversary_reviews_checkpoint_and_final(
+    tmp_path: Path,
+) -> None:
+    model = ChainFakeModel()
+    broker = PlanAdversaryExternalModelBroker()
+    events = []
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=2,
+            min_search_calls_before_final=0,
+            require_citations=False,
+            require_opened_citation_support=False,
+            automatic_external_strategy_recovery=False,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=model,
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=4,
+        ),
+        external_model_broker=broker,
+        event_sink=events.append,
+    )
+
+    outcome = await runner.run(
+        "Question",
+        request_namespace="run:item:guided",
+        initial_guidance="Search, open evidence, falsify, then answer.",
+        blocking_guidance_adversary=True,
+        guidance_adversary_interval_steps=1,
+        guidance_adversary_max_checkpoints=1,
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Answer"
+    assert outcome.external_model_calls == 2
+    assert [namespace for _, namespace in broker.calls] == [
+        "run:item:guided:blocking-plan-checkpoint",
+        "run:item:guided:blocking-plan-final",
+    ]
+    assert any(
+        message.get("role") == "system"
+        and "Synchronous blocking plan-adherence review" in message.get("content", "")
+        for message in model.calls[1][0]
+    )
+    assert any(
+        event["event"] == "blocking_guidance_adversary_completed"
+        and event["phase"] == "final"
+        and event["verdict"] == "PASS"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_blocking_guidance_adversary_rejects_final_until_corrected(
+    tmp_path: Path,
+) -> None:
+    class CorrectingModel:
+        def __init__(self):
+            self.responses = iter(
+                [
+                    ModelResponse(content='{"action":"search","query":"rare clue"}'),
+                    ModelResponse(
+                        content=(
+                            '{"action":"final","explanation":"premature",'
+                            '"exact_answer":"Wrong","confidence":80,"citations":[]}'
+                        )
+                    ),
+                    ModelResponse(
+                        content=(
+                            '{"action":"final","explanation":"corrected after review",'
+                            '"exact_answer":"Correct","confidence":70,"citations":[]}'
+                        )
+                    ),
+                ]
+            )
+
+        async def chat(self, messages, **kwargs):
+            del messages, kwargs
+            return next(self.responses)
+
+        async def close(self):
+            return None
+
+    class BlockingThenPassingBroker:
+        def __init__(self):
+            self.final_reviews = 0
+
+        async def ask_many(self, requests, *, request_namespace):
+            del requests
+            if request_namespace.endswith(":blocking-plan-checkpoint"):
+                verdict = "ON_TRACK"
+                required = ["compare the leading candidate"]
+            else:
+                self.final_reviews += 1
+                verdict = "BLOCK" if self.final_reviews == 1 else "PASS"
+                required = ["verify the missing clue"] if verdict == "BLOCK" else []
+            return [
+                {
+                    "ok": True,
+                    "request_id": f"review-{self.final_reviews}",
+                    "content": json.dumps(
+                        {
+                            "verdict": verdict,
+                            "observed_stage": "final verification",
+                            "followed": [],
+                            "material_deviations": required,
+                            "required_next_actions": required,
+                            "reason": "A material plan requirement remains." if required else "Ready.",
+                        }
+                    ),
+                }
+            ]
+
+    events = []
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=3,
+            min_search_calls_before_final=0,
+            require_citations=False,
+            require_opened_citation_support=False,
+            automatic_external_strategy_recovery=False,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=CorrectingModel(),
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=5,
+        ),
+        external_model_broker=BlockingThenPassingBroker(),
+        event_sink=events.append,
+    )
+
+    outcome = await runner.run(
+        "Question",
+        request_namespace="run:item:block-correction",
+        initial_guidance="Search, compare, falsify, and verify before finalizing.",
+        blocking_guidance_adversary=True,
+        guidance_adversary_interval_steps=1,
+        guidance_adversary_max_checkpoints=1,
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Correct"
+    assert outcome.external_model_calls == 3
+    assert sum(event["event"] == "blocking_guidance_final_rejected" for event in events) == 1
+
+
+def test_blocking_guidance_review_parses_textual_blocked_fallback() -> None:
+    review = AgentRunner._blocking_guidance_review_payload(
+        {
+            "ok": True,
+            "request_id": "review-text",
+            "content": "### Review\nVERDICT: BLOCKED\nOpen the remaining mapped sources.",
+        }
+    )
+
+    assert review["verdict"] == "BLOCK"
+    assert review["observed_stage"] == "textual_review_fallback"
+    assert "VERDICT: BLOCKED" in review["raw_review_content"]
+
+
+def test_blocking_checkpoint_adds_system_correction_after_tool_result() -> None:
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": []},
+        {"role": "tool", "tool_call_id": "call-1", "content": '{"ok":true}'},
+    ]
+    review = {
+        "verdict": "BLOCK",
+        "required_next_actions": ["open the remaining mapped source"],
+    }
+
+    attached = AgentRunner._attach_blocking_guidance_review(messages, review)
+
+    assert attached["role"] == "system"
+    assert messages[-2]["role"] == "tool"
+    assert "blocking_plan_adversary" in messages[-2]["content"]
+    assert "next substantive action" in messages[-1]["content"]
+
+
+def test_blocking_checkpoint_requires_matching_repair_action_type() -> None:
+    review = {
+        "verdict": "BLOCK",
+        "required_next_actions": ["Open and inspect the remaining mapped sources."],
+    }
+
+    assert AgentRunner._action_repairs_blocking_guidance_review(
+        AgentAction(action="open_many", payload={"urls": []}),
+        review,
+    )
+    assert not AgentRunner._action_repairs_blocking_guidance_review(
+        AgentAction(action="search_many", payload={"queries": []}),
+        review,
+    )
+    assert not AgentRunner._action_repairs_blocking_guidance_review(
+        AgentAction(action="final", payload={"exact_answer": "candidate"}),
+        review,
+    )
+
+
+def test_scripted_guidance_step_requires_action_and_exact_url() -> None:
+    step = {
+        "allowed_actions": ["open"],
+        "required_urls": ["https://example.test/source"],
+    }
+
+    assert AgentRunner._action_matches_scripted_step(
+        AgentAction(action="open", payload={"url": "https://example.test/source/"}),
+        step,
+    )
+    assert not AgentRunner._action_matches_scripted_step(
+        AgentAction(action="search", payload={"query": "example source"}),
+        step,
+    )
+    assert not AgentRunner._action_matches_scripted_step(
+        AgentAction(action="open", payload={"url": "https://example.test/other"}),
+        step,
+    )
+
+
+def test_single_source_attribution_question_requires_one_answer_naming_document() -> None:
+    question = (
+        "Several clues identify an entity. According to an article published in 2021, the first "
+        "person credited with documenting it is identified in this source. Provide the full name "
+        "exactly as it appears in the article."
+    )
+
+    assert AgentRunner._minimum_answer_supporting_documents(question) == 1
 
 
 class SurfaceConstraintModel:
@@ -632,6 +920,33 @@ class RescueExternalModelBroker:
         ]
 
 
+class RescueWithBlockingPlanAdversaryBroker(RescueExternalModelBroker):
+    def __init__(self):
+        self.calls = []
+
+    async def ask_many(self, requests, *, request_namespace):
+        self.calls.append((deepcopy(requests), request_namespace))
+        if request_namespace.endswith(":blocking-plan-final_rescue"):
+            return [
+                {
+                    "ok": True,
+                    "status": "succeeded",
+                    "request_id": "plan-review-rescue",
+                    "content": json.dumps(
+                        {
+                            "verdict": "BLOCK",
+                            "observed_stage": "premature finalization",
+                            "followed": [],
+                            "material_deviations": ["required source was not opened"],
+                            "required_next_actions": ["open and inspect the required source"],
+                            "reason": "The rescue answer is not supported by the planned evidence.",
+                        }
+                    ),
+                }
+            ]
+        return await super().ask_many(requests, request_namespace=request_namespace)
+
+
 class QueryStrategyExternalModelBroker:
     def __init__(self):
         self.calls = []
@@ -647,6 +962,32 @@ class QueryStrategyExternalModelBroker:
                     '{"analysis":"pivot from repeated clue wording",'
                     '"queries":["entity history explorer attribution",'
                     '"candidate chronicler entity earliest account"]}'
+                ),
+            }
+        ]
+
+
+class PlanAdversaryExternalModelBroker:
+    def __init__(self):
+        self.calls = []
+
+    async def ask_many(self, requests, *, request_namespace):
+        self.calls.append((deepcopy(requests), request_namespace))
+        verdict = "PASS" if request_namespace.endswith(":blocking-plan-final") else "ON_TRACK"
+        return [
+            {
+                "ok": True,
+                "status": "succeeded",
+                "request_id": f"plan-review-{len(self.calls)}",
+                "content": json.dumps(
+                    {
+                        "verdict": verdict,
+                        "observed_stage": "evidence verification",
+                        "followed": ["candidate search completed"],
+                        "material_deviations": [],
+                        "required_next_actions": ["open the strongest source"],
+                        "reason": "The trajectory follows the material plan stages.",
+                    }
                 ),
             }
         ]
@@ -2522,6 +2863,64 @@ async def test_external_finalization_rescue_cannot_bypass_opened_citation_gate(
     ]
     assert len(rejected) == 1
     assert any("evidence constraint" in violation for violation in rejected[0]["violations"])
+
+
+@pytest.mark.asyncio
+async def test_external_finalization_rescue_cannot_bypass_blocking_plan_adversary(
+    tmp_path: Path,
+) -> None:
+    events: list[dict] = []
+    broker = RescueWithBlockingPlanAdversaryBroker()
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="json",
+            response_chain=False,
+        ),
+        AgentConfig(
+            max_steps=2,
+            max_search_calls=1,
+            automatic_finalization_rescue_after_rejections=1,
+            require_citations=False,
+            require_opened_citation_support=False,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=BudgetRescueModel(),
+        external_model_config=ExternalModelConfig(
+            enabled=True,
+            default_provider="mock",
+            allowed_providers=["mock"],
+            max_calls_per_task=4,
+        ),
+        external_model_broker=broker,
+        event_sink=events.append,
+    )
+
+    outcome = await runner.run(
+        "Question",
+        request_namespace="run:item:guided-rescue",
+        initial_guidance="Open and inspect the required source before finalizing.",
+        blocking_guidance_adversary=True,
+        guidance_adversary_max_checkpoints=0,
+    )
+
+    assert outcome.status == "no_final"
+    assert outcome.exact_answer is None
+    assert any(
+        event["event"] == "blocking_guidance_adversary_completed"
+        and event["phase"] == "final_rescue"
+        and event["verdict"] == "BLOCK"
+        for event in events
+    )
+    assert any(
+        event["event"] == "automatic_finalization_rescue_rejected"
+        and "blocking plan-adherence adversary" in event["violations"][0]
+        for event in events
+    )
 
 
 @pytest.mark.asyncio
