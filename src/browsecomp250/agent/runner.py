@@ -250,6 +250,7 @@ class AgentRunner:
         errors: list[str] = []
         notes: list[str] = []
         opened: dict[str, PageDocument] = {}
+        evidence_journal: list[dict[str, Any]] = []
         geo_evidence: list[dict[str, Any]] = []
         search_calls = page_opens = find_calls = retrieved_chars = external_model_calls = 0
         parse_failures = 0
@@ -324,6 +325,7 @@ class AgentRunner:
                 break
             current_scripted_step: dict[str, Any] | None = None
             scripted_force_final = False
+            scripted_required_action: str | None = None
             if scripted_guidance_steps and scripted_step_index < len(scripted_guidance_steps):
                 current_scripted_step = scripted_guidance_steps[scripted_step_index]
                 scripted_step_attempts += 1
@@ -341,11 +343,14 @@ class AgentRunner:
                         scripted_step=current_scripted_step,
                     )
                     break
-                scripted_force_final = {
+                scripted_actions = {
                     str(value).strip()
                     for value in current_scripted_step.get("allowed_actions", [])
                     if str(value).strip()
-                } == {"final"}
+                }
+                if len(scripted_actions) == 1:
+                    scripted_required_action = next(iter(scripted_actions))
+                scripted_force_final = scripted_required_action == "final"
                 scripted_message = {
                     "role": scripted_guidance_role,
                     "content": (
@@ -432,31 +437,34 @@ class AgentRunner:
                 wire_messages = messages
                 chain_body: dict[str, Any] = {}
                 if scripted_force_final:
+                    unique_opened: dict[str, PageDocument] = {}
+                    for document in opened.values():
+                        unique_opened[document.final_url] = document
                     opened_evidence = [
                         {
                             "url": document.final_url,
                             "title": document.title,
-                            "text": truncate_middle(document.text, 12_000),
+                            "text": truncate_middle(document.text, 6_000),
                         }
-                        for document in list(opened.values())[-12:]
+                        for document in list(unique_opened.values())[-12:]
                     ]
                     final_system = SCRIPTED_FINAL_SYSTEM_PROMPT
                     final_user = (
-                        "Research plan:\n"
-                        + (initial_guidance or "")
+                        "Answer-redacted guide and constraint plan:\n"
+                        + truncate_middle(review_guidance or initial_guidance or "", 40_000)
                         + "\n\nOriginal question:\n"
                         + question
                         + "\n\nFinal step contract:\n"
                         + canonical_json(current_scripted_step or {})
                         + "\n\nInspected public source evidence:\n"
                         + canonical_json(opened_evidence)
-                        + "\n\nLatest verification-search evidence:\n"
-                        + truncate_middle(
-                            canonical_json(last_successful_search_result or {}),
-                            30_000,
-                        )
+                        + "\n\nChronological public tool-evidence journal:\n"
+                        + truncate_middle(canonical_json(evidence_journal[-30:]), 80_000)
                         + "\n\nSaved structured research notes:\n"
-                        + canonical_json(notes[-20:])
+                        + truncate_middle(canonical_json(notes[-20:]), 30_000)
+                        + "\n\nUse the complete evidence state above. Earlier search batches and "
+                        "independent helper findings remain relevant; do not privilege only the "
+                        "last search. The private reference answer is not present."
                     )
                     wire_messages = [
                         {"role": "system", "content": final_system},
@@ -520,13 +528,19 @@ class AgentRunner:
                     )
                     or step == self.agent_config.max_steps
                 )
+                query_force_final = (
+                    scripted_force_final
+                    if current_scripted_step is not None
+                    else force_final_this_turn
+                )
                 query_task = asyncio.create_task(
                     self._query(
                         wire_messages,
                         protocol,
                         extra_body=chain_body,
-                        force_final=force_final_this_turn,
+                        force_final=query_force_final,
                         require_open=require_open,
+                        required_action=scripted_required_action,
                         request_headers=request_headers,
                     )
                 )
@@ -597,7 +611,7 @@ class AgentRunner:
                 action, assistant_message = self._parse_action(
                     response,
                     protocol,
-                    force_final=force_final_this_turn,
+                    force_final=query_force_final,
                 )
                 parse_failures = 0
             except ProtocolError as exc:
@@ -1168,6 +1182,13 @@ class AgentRunner:
                             + ". Complete those actions using public evidence, then propose a new final."
                         )
                         errors.append(correction)
+                        notes.append(
+                            truncate_middle(
+                                "Blocking pre-submit review:\n"
+                                + canonical_json(adversary_review),
+                                5_000,
+                            )
+                        )
                         raw_tool_calls = assistant_message.get("tool_calls")
                         if (
                             protocol in {"tools", "auto"}
@@ -2099,6 +2120,35 @@ class AgentRunner:
                 result=result,
             )
 
+            if result.get("ok") and action.action in {
+                "search",
+                "search_many",
+                "open",
+                "open_many",
+                "find",
+                "geo_search",
+                "ask_external_model",
+                "note",
+            }:
+                evidence_journal.append(
+                    {
+                        "step": step,
+                        "scripted_step_id": (
+                            current_scripted_step.get("id")
+                            if current_scripted_step is not None
+                            else None
+                        ),
+                        "action": action.action,
+                        "request": truncate_middle(canonical_json(action.payload), 4_000),
+                        "result": truncate_middle(
+                            canonical_json(result),
+                            30_000 if action.action in {"ask_external_model", "geo_search"} else 16_000,
+                        ),
+                    }
+                )
+                if len(evidence_journal) > 40:
+                    del evidence_journal[:-40]
+
             if current_scripted_step is not None:
                 if result.get("ok") or current_scripted_step.get("advance_on_attempt") is True:
                     self._emit(
@@ -2169,6 +2219,7 @@ class AgentRunner:
         extra_body: dict[str, Any] | None = None,
         force_final: bool = False,
         require_open: bool = False,
+        required_action: str | None = None,
         request_headers: dict[str, str] | None = None,
     ):
         if protocol in {"tools", "auto"}:
@@ -2178,7 +2229,21 @@ class AgentRunner:
                     self.external_model_config.enabled and self.external_model is not None
                 )
             )
-            if force_final:
+            if required_action is not None:
+                tools = [
+                    tool
+                    for tool in tools
+                    if (tool.get("function") or {}).get("name") == required_action
+                ]
+                if not tools:
+                    raise ModelAPIError(
+                        f"Required scripted tool is unavailable: {required_action}"
+                    )
+                tool_choice = {
+                    "type": "function",
+                    "function": {"name": required_action},
+                }
+            elif force_final:
                 tools = [
                     tool for tool in tools if (tool.get("function") or {}).get("name") == "final"
                 ]
@@ -2466,6 +2531,17 @@ class AgentRunner:
         allowed_actions = {str(value).strip() for value in allowed if str(value).strip()}
         if action.action not in allowed_actions:
             return False
+        minimum_batch_size = scripted_step.get("minimum_batch_size")
+        if isinstance(minimum_batch_size, int) and minimum_batch_size > 0:
+            batch_key = {
+                "search_many": "queries",
+                "open_many": "urls",
+                "geo_search": "anchors",
+                "ask_external_model": "requests",
+            }.get(action.action)
+            batch = action.payload.get(batch_key) if batch_key else None
+            if not isinstance(batch, list) or len(batch) < minimum_batch_size:
+                return False
         required_urls = scripted_step.get("required_urls")
         if isinstance(required_urls, list) and required_urls:
             supplied_urls: list[str] = []
@@ -2651,9 +2727,12 @@ class AgentRunner:
             }
         )
         phase_instruction = (
-            "For a final review, return PASS only if the executed evidence trail supports every "
-            "material clue, includes the plan's required candidate comparison and falsification, "
-            "and supports the proposed exact answer from opened public sources."
+            "For a final review, return PASS when the proposed exact answer is directly supported "
+            "by inspected public evidence, the identity chain is coherent, and no material clue "
+            "contradicts it. Require candidate comparison and falsification, but do not block a "
+            "correct directly supported answer merely because an incidental clue lacks a second "
+            "redundant source. A mapped source explicitly marked gold or target controls the "
+            "requested source-specific fact unless stronger direct evidence contradicts it."
             if phase.startswith("final")
             else "At this checkpoint, use ON_TRACK when the trajectory is materially following "
             "the plan and BLOCK when it is cycling, skipping a required stage, or failing to open "

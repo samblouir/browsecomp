@@ -24,16 +24,24 @@ from browsecomp250.guided_training import (
     compile_guided_steps,
     controller_label_leaks,
     curate_scripted_training_messages,
+    training_message_quality,
 )
 from browsecomp250.llm import OpenAICompatibleClient, settings_from_model_config
+from browsecomp250.prompts import AGENT_SYSTEM_PROMPT
 from browsecomp250.search import create_search_provider
 from browsecomp250.util import atomic_write_json, atomic_write_text, canonical_json, utc_now_iso
 
 DEFAULT_STAR7_ENDPOINTS = ",".join(
-    f"http://127.0.0.1:{port}/v1" for port in range(9375, 9383)
+    [
+        "http://192.168.1.233:9304/v1",
+        "http://192.168.1.233:9324/v1",
+        "http://192.168.1.233:9334/v1",
+    ]
+    + [f"http://127.0.0.1:{port}/v1" for port in range(9375, 9383)]
 )
 DEFAULT_STAR2_ENDPOINTS = ",".join(
-    f"http://127.0.0.1:{port}/v1" for port in range(9383, 9390)
+    ["http://192.168.1.233:9364/v1"]
+    + [f"http://127.0.0.1:{port}/v1" for port in range(9383, 9390)]
 )
 GENERIC_INITIAL_GUIDANCE = (
     "This is an answer-redacted teacher-forced research trajectory. The controller will send "
@@ -52,13 +60,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--guide-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--status-file", type=Path)
-    parser.add_argument("--concurrency", type=int, default=8)
+    parser.add_argument("--concurrency", type=int, default=11)
     parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--item-timeout-seconds", type=float, default=3600)
     parser.add_argument("--indices", help="Zero-based comma/range selection, for example 0-9,82")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--star7-endpoints", default=DEFAULT_STAR7_ENDPOINTS)
     parser.add_argument("--star2-endpoints", default=DEFAULT_STAR2_ENDPOINTS)
+    parser.add_argument("--grader-endpoint", default="http://127.0.0.1:8003/v1")
+    parser.add_argument("--grader-model", default="frontierrl/star-2")
     parser.add_argument("--deterministic-only", action="store_true")
     return parser.parse_args()
 
@@ -191,7 +201,7 @@ def existing_attempt_number(path: Path) -> int:
     return max(values, default=0)
 
 
-def load_rejected_candidates(path: Path) -> list[str]:
+def load_attempted_candidates(path: Path) -> list[str]:
     status = path / "status.json"
     if not status.exists():
         return []
@@ -199,7 +209,8 @@ def load_rejected_candidates(path: Path) -> list[str]:
         value = json.loads(status.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
-    return [str(item) for item in value.get("rejected_candidates") or [] if str(item).strip()]
+    values = value.get("attempted_candidates") or value.get("rejected_candidates") or []
+    return [str(item) for item in values if str(item).strip()]
 
 
 def write_private_json(path: Path, value: Any) -> None:
@@ -212,46 +223,168 @@ def write_private_text(path: Path, value: str) -> None:
     os.chmod(path, 0o600)
 
 
-def tool_names(messages: list[dict[str, Any]]) -> list[str]:
-    names = []
-    for message in messages:
-        for tool_call in message.get("tool_calls") or []:
-            names.append(str((tool_call.get("function") or {}).get("name") or ""))
-    return names
+def configured_agent_system_prompt(config: AppConfig) -> str:
+    path = config.agent.system_prompt_path
+    if path is not None and path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    return AGENT_SYSTEM_PROMPT
 
 
-def training_quality(messages: list[dict[str, Any]]) -> dict[str, Any]:
-    assistant_actions = [
-        message
-        for message in messages
-        if message.get("role") == "assistant" and message.get("tool_calls")
+def reconstructed_initial_messages(
+    config: AppConfig,
+    *,
+    question: str,
+    scripted_step_count: int,
+) -> list[dict[str, Any]]:
+    agent_config = config.agent.model_copy(
+        deep=True,
+        update={
+            "max_steps": max(80, scripted_step_count * 3 + 10),
+            "max_search_calls": max(80, scripted_step_count * 7),
+            "max_page_opens": max(100, scripted_step_count * 4),
+            "force_final_after_seconds": 0,
+        },
+    )
+    initial_user = (
+        "Research plan:\n"
+        + GENERIC_INITIAL_GUIDANCE
+        + "\n\nQuestion:\n"
+        + question
+        + "\n\nBudgets: "
+        + canonical_json(
+            {
+                "max_steps": agent_config.max_steps,
+                "force_final_after_seconds": agent_config.force_final_after_seconds,
+                "max_search_calls": agent_config.max_search_calls,
+                "max_page_opens": agent_config.max_page_opens,
+                "max_find_calls": agent_config.max_find_calls,
+                "max_external_model_calls": config.external_model.max_calls_per_task,
+            }
+        )
+    )
+    return [
+        {"role": "system", "content": configured_agent_system_prompt(config)},
+        {"role": "user", "content": initial_user},
     ]
-    reasoning_count = sum(bool(message.get("reasoning")) for message in assistant_actions)
-    failed_tool_results = 0
-    for message in messages:
-        if message.get("role") != "tool":
+
+
+async def recover_verified_rows(
+    *,
+    output_dir: Path,
+    config: AppConfig,
+    oracle_records: list[dict[str, Any]],
+    indices: list[int],
+    grader: Grader | None,
+    grader_semaphore: asyncio.Semaphore,
+) -> dict[str, Any]:
+    recovered: list[dict[str, Any]] = []
+    system_prompt = configured_agent_system_prompt(config)
+    for index in indices:
+        oracle_record = oracle_records[index]
+        item_dir = item_directory(output_dir, oracle_record)
+        if completed_training_path(output_dir, oracle_record).exists() or not item_dir.exists():
             continue
-        try:
-            value = json.loads(str(message.get("content") or "{}"))
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict) and value.get("ok") is False:
-            failed_tool_results += 1
-    names = tool_names(messages)
-    return {
-        "assistant_action_count": len(assistant_actions),
-        "assistant_reasoning_count": reasoning_count,
-        "failed_tool_results": failed_tool_results,
-        "final_action_present": bool(names and names[-1] == "final"),
-        "tool_names": names,
-        "passed": bool(
-            assistant_actions
-            and reasoning_count == len(assistant_actions)
-            and failed_tool_results == 0
-            and names
-            and names[-1] == "final"
-        ),
-    }
+        for result_path in sorted(item_dir.glob("attempt-*-result.json")):
+            try:
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if result.get("status") not in {"completed", "training_quality_rejected"}:
+                continue
+            attempt = int(result.get("attempt") or 0)
+            response = str(result.get("answer_response") or "")
+            reference = str(oracle_record["oracle"]["gold_answer"])
+            try:
+                grade, grade_mode = await grade_response(
+                    question=str(oracle_record["item"]["question_text"]),
+                    answer=reference,
+                    response=response,
+                    grader=grader,
+                    grader_semaphore=grader_semaphore,
+                )
+            except Exception:  # noqa: BLE001 - leave uncertain legacy rows untouched
+                continue
+            if not grade.correct:
+                continue
+            event_path = Path(str(result.get("event_path") or ""))
+            try:
+                events = [
+                    json.loads(line)
+                    for line in event_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+            except (OSError, json.JSONDecodeError):
+                continue
+            scripted_step_count = int(result.get("compiled_plan_steps") or 0)
+            if scripted_step_count < 1:
+                continue
+            curated = curate_scripted_training_messages(
+                events,
+                initial_messages=reconstructed_initial_messages(
+                    config,
+                    question=str(oracle_record["item"]["question_text"]),
+                    scripted_step_count=scripted_step_count,
+                ),
+                scripted_step_count=scripted_step_count,
+            )
+            quality = training_message_quality(curated)
+            system_audit = audit_system_messages(
+                transcript=curated,
+                invariant_system_prompt=system_prompt,
+                events=events,
+                expected_final_system_prompt=SCRIPTED_FINAL_SYSTEM_PROMPT,
+            )
+            if not quality["passed"] or not system_audit["passed"]:
+                continue
+            training_row = {
+                "schema_version": "1.0",
+                "item_id": oracle_record["item"]["item_id"],
+                "source_index": oracle_record["item"]["row_index"],
+                "trajectory_type": "teacher_forced_full_guide_answer_redacted",
+                "messages": curated,
+                "final_response": response,
+                "correct": True,
+                "metadata": {
+                    "attempt": attempt,
+                    "benchmark_eligible": False,
+                    "blocking_final_review": True,
+                    "controller_answer_label_leak": False,
+                    "item_specific_system_prompt_content": False,
+                    "invariant_system_prompt_sha256": system_audit[
+                        "invariant_system_prompt_sha256"
+                    ],
+                    "scripted_guidance_role": "user",
+                    "compiled_plan_steps": scripted_step_count,
+                    "grader_mode": grade_mode,
+                    "recovered_from_prior_attempt": True,
+                },
+            }
+            training_path = item_dir / "training.jsonl"
+            write_private_text(
+                training_path,
+                json.dumps(training_row, ensure_ascii=False, sort_keys=True) + "\n",
+            )
+            recovery = {
+                "schema_version": "1.0",
+                "recovered_at": utc_now_iso(),
+                "attempt": attempt,
+                "source_result": str(result_path),
+                "source_events": str(event_path),
+                "training_path": str(training_path),
+                "quality": quality,
+                "system_message_audit": system_audit,
+            }
+            recovery["grader_mode"] = grade_mode
+            write_private_json(item_dir / "verified-answer-recovery.json", recovery)
+            recovered.append(
+                {
+                    "row_index": index,
+                    "attempt": attempt,
+                    "training_path": str(training_path),
+                }
+            )
+            break
+    return {"recovered_count": len(recovered), "recovered": recovered}
 
 
 @dataclass
@@ -372,7 +505,6 @@ async def run_attempt(
     route_record: dict[str, Any],
     oracle_record: dict[str, Any],
     attempt: int,
-    rejected_candidates: list[str],
     item_dir: Path,
     timeout_seconds: float,
     grader: Grader | None,
@@ -393,15 +525,6 @@ async def run_attempt(
     if leaks:
         raise RuntimeError(f"Controller answer-label leak detected for aliases: {leaks!r}")
     initial_guidance = GENERIC_INITIAL_GUIDANCE
-    if rejected_candidates:
-        initial_guidance += (
-            "\n\nPrior candidates rejected by private grading; do not repeat them without new "
-            "direct evidence: " + canonical_json(rejected_candidates[-3:])
-        )
-        review_guidance += "\nPrior privately rejected candidates: " + canonical_json(
-            rejected_candidates[-3:]
-        )
-
     attempt_prefix = item_dir / f"attempt-{attempt:02d}"
     events_path = attempt_prefix.with_name(attempt_prefix.name + "-events.jsonl")
     events_path.parent.mkdir(parents=True, exist_ok=True)
@@ -470,9 +593,9 @@ async def run_attempt(
                 blocking_guidance_adversary=True,
                 guidance_adversary_interval_steps=0,
                 guidance_adversary_max_checkpoints=0,
-                scripted_final_block_fail_fast=True,
+                scripted_final_block_fail_fast=False,
                 scripted_guidance_role="user",
-                scripted_step_max_attempts=4,
+                scripted_step_max_attempts=6,
             )
     finally:
         await runner.close()
@@ -540,7 +663,7 @@ async def run_attempt(
             initial_messages=outcome.transcript[:2],
             scripted_step_count=len(scripted_steps),
         )
-        quality = training_quality(curated)
+        quality = training_message_quality(curated)
         result["training_quality"] = quality
         if quality["passed"]:
             training_row = {
@@ -620,6 +743,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         await probe_endpoint(endpoint, "frontierrl/star-7", base_config)
     for endpoint in sorted(set(star2_endpoints[index % len(star2_endpoints)] for index in range(concurrency))):
         await probe_endpoint(endpoint, "frontierrl/star-2", base_config)
+    if not args.deterministic_only:
+        await probe_endpoint(args.grader_endpoint, args.grader_model, base_config)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(args.output_dir, 0o700)
@@ -627,14 +752,50 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     status_path = args.status_file or (args.output_dir / "status.json")
     started_at = utc_now_iso()
     started_clock = time.perf_counter()
-    queue: asyncio.Queue[int] = asyncio.Queue()
+    grader_config = base_config.grader.model_copy(
+        deep=True,
+        update={
+            "api_base": args.grader_endpoint,
+            "api_key": base_config.model.api_key,
+            "allow_empty_api_key": base_config.model.allow_empty_api_key,
+            "model": args.grader_model,
+            "temperature": 0.7,
+            "max_output_tokens": 16384,
+            "timeout_seconds": 360,
+            "extra_headers_json": {},
+            "extra_body": {
+                "top_p": 0.95,
+            },
+        },
+    )
+    grader = None if args.deterministic_only else Grader(grader_config)
+    grader_semaphore = asyncio.Semaphore(max(1, min(8, concurrency)))
+    quality_recovery = await recover_verified_rows(
+        output_dir=args.output_dir,
+        config=base_config,
+        oracle_records=oracle_records,
+        indices=indices,
+        grader=grader,
+        grader_semaphore=grader_semaphore,
+    )
+    write_private_json(args.output_dir / "quality-recovery-summary.json", quality_recovery)
+
+    queue: asyncio.Queue[int | None] = asyncio.Queue()
     already_correct = {
         index
         for index in indices
         if completed_training_path(args.output_dir, oracle_records[index]).exists()
     }
+    already_exhausted: set[int] = set()
     for index in indices:
-        if index not in already_correct:
+        if index in already_correct:
+            continue
+        if (
+            existing_attempt_number(item_directory(args.output_dir, oracle_records[index]))
+            >= args.max_attempts
+        ):
+            already_exhausted.add(index)
+        else:
             queue.put_nowait(index)
 
     state: dict[str, Any] = {
@@ -642,15 +803,13 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         "started_at": started_at,
         "selected_total": len(indices),
         "correct": set(already_correct),
-        "failed": set(),
+        "failed": set(already_exhausted),
+        "retry_pending": {},
         "in_progress": {},
         "attempts_completed": 0,
         "last_errors": {},
     }
     state_lock = asyncio.Lock()
-    grader = None if args.deterministic_only else Grader(base_config.grader)
-    grader_semaphore = asyncio.Semaphore(max(1, min(8, concurrency)))
-
     async def publish_status(*, done: bool = False) -> dict[str, Any]:
         async with state_lock:
             elapsed = max(0.001, time.perf_counter() - started_clock)
@@ -670,13 +829,16 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 "failed": len(state["failed"]),
                 "finished_items": finished,
                 "pending": queue.qsize(),
+                "retry_pending": dict(state["retry_pending"]),
                 "in_progress": dict(state["in_progress"]),
                 "attempts_completed": state["attempts_completed"],
+                "maximum_attempts_per_item": args.max_attempts,
                 "items_per_hour": rate,
                 "eta_seconds": remaining / rate * 3600 if rate > 0 else None,
                 "done": done,
                 "last_errors": dict(list(state["last_errors"].items())[-20:]),
                 "compiler_preflight": preflight,
+                "quality_recovery": quality_recovery,
                 "notes": (
                     "Full 1,266-item private oracle-guided training capture; answers are withheld "
                     "from controller prompts and only correct, quality-gated traces are exported."
@@ -692,54 +854,53 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         item_dir = item_directory(args.output_dir, oracle_record)
         item_dir.mkdir(parents=True, exist_ok=True)
         os.chmod(item_dir, 0o700)
-        rejected_candidates = load_rejected_candidates(item_dir)
-        next_attempt = existing_attempt_number(item_dir) + 1
-        last_result: dict[str, Any] | None = None
-        for attempt in range(next_attempt, args.max_attempts + 1):
-            try:
-                result = await run_attempt(
-                    resources=resources,
-                    route_record=route_record,
-                    oracle_record=oracle_record,
-                    attempt=attempt,
-                    rejected_candidates=rejected_candidates,
-                    item_dir=item_dir,
-                    timeout_seconds=args.item_timeout_seconds,
-                    grader=grader,
-                    grader_semaphore=grader_semaphore,
-                )
-            except Exception as exc:  # noqa: BLE001 - isolate one item from the full batch
-                result = {
-                    "item_id": oracle_record["item"]["item_id"],
-                    "row_index": index,
-                    "attempt": attempt,
-                    "status": "error",
-                    "correct": False,
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-                write_private_json(item_dir / f"attempt-{attempt:02d}-result.json", result)
-            last_result = result
-            async with state_lock:
-                state["attempts_completed"] += 1
-            if result.get("correct") and completed_training_path(
-                args.output_dir, oracle_record
-            ).exists():
-                break
-            candidate = str(result.get("extracted_answer") or "").strip()
-            if candidate and candidate not in rejected_candidates:
-                rejected_candidates.append(candidate)
+        attempted_candidates = load_attempted_candidates(item_dir)
+        attempt = existing_attempt_number(item_dir) + 1
+        if attempt > args.max_attempts:
+            raise RuntimeError(
+                f"Item {index} was queued after exhausting {args.max_attempts} attempts"
+            )
+        try:
+            result = await run_attempt(
+                resources=resources,
+                route_record=route_record,
+                oracle_record=oracle_record,
+                attempt=attempt,
+                item_dir=item_dir,
+                timeout_seconds=args.item_timeout_seconds,
+                grader=grader,
+                grader_semaphore=grader_semaphore,
+            )
+        except Exception as exc:  # noqa: BLE001 - isolate one item from the full batch
+            result = {
+                "item_id": oracle_record["item"]["item_id"],
+                "row_index": index,
+                "attempt": attempt,
+                "status": "error",
+                "correct": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            write_private_json(item_dir / f"attempt-{attempt:02d}-result.json", result)
+        async with state_lock:
+            state["attempts_completed"] += 1
+        candidate = str(result.get("extracted_answer") or "").strip()
+        if candidate and candidate not in attempted_candidates:
+            attempted_candidates.append(candidate)
 
         correct = completed_training_path(args.output_dir, oracle_record).exists()
+        retry_scheduled = not correct and attempt < args.max_attempts
         item_status = {
             "item_id": oracle_record["item"]["item_id"],
             "row_index": index,
             "correct": correct,
-            "status": "completed" if correct else "failed",
+            "status": (
+                "completed" if correct else "retry_pending" if retry_scheduled else "failed"
+            ),
             "attempts": existing_attempt_number(item_dir),
-            "rejected_candidates": rejected_candidates,
-            "last_result_status": (last_result or {}).get("status"),
-            "last_error": (last_result or {}).get("error")
-            or (last_result or {}).get("grader_error"),
+            "next_attempt": attempt + 1 if retry_scheduled else None,
+            "attempted_candidates": attempted_candidates,
+            "last_result_status": result.get("status"),
+            "last_error": result.get("error") or result.get("grader_error"),
             "updated_at": utc_now_iso(),
         }
         write_private_json(item_dir / "status.json", item_status)
@@ -748,19 +909,28 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
             if correct:
                 state["correct"].add(index)
                 state["failed"].discard(index)
+                state["retry_pending"].pop(str(index), None)
+            elif retry_scheduled:
+                state["failed"].discard(index)
+                state["retry_pending"][str(index)] = attempt + 1
             else:
                 state["failed"].add(index)
+                state["retry_pending"].pop(str(index), None)
                 state["last_errors"][str(index)] = str(
                     item_status.get("last_error") or item_status["last_result_status"]
                 )
+        if retry_scheduled:
+            queue.put_nowait(index)
         status = await publish_status()
         print(
             json.dumps(
                 {
-                    "event": "item_finished",
+                    "event": "attempt_finished" if retry_scheduled else "item_finished",
                     "worker": resources.worker_id,
                     "item_index": index,
+                    "attempt": attempt,
                     "correct": correct,
+                    "retry_scheduled": retry_scheduled,
                     "current_records": status["current_records"],
                     "finished_items": status["finished_items"],
                     "target": status["target_total_questions"],
@@ -774,11 +944,12 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     async def worker_loop(resources: WorkerResources) -> None:
         try:
             while True:
-                try:
-                    index = queue.get_nowait()
-                except asyncio.QueueEmpty:
+                index = await queue.get()
+                if index is None:
+                    queue.task_done()
                     return
                 async with state_lock:
+                    state["retry_pending"].pop(str(index), None)
                     state["in_progress"][str(index)] = {
                         "worker": resources.worker_id,
                         "star7": resources.star7_endpoint,
@@ -804,7 +975,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         for worker_id in range(concurrency)
     ]
     try:
-        await asyncio.gather(*(worker_loop(value) for value in resources))
+        worker_tasks = [asyncio.create_task(worker_loop(value)) for value in resources]
+        await queue.join()
+        for _ in resources:
+            queue.put_nowait(None)
+        await asyncio.gather(*worker_tasks)
     finally:
         if grader is not None:
             await grader.close()

@@ -24,7 +24,11 @@ class FakeClient:
 def test_deterministic_normalization() -> None:
     assert equivalent("The Plastic Man", "Plastic Man")
     assert equivalent("1,000", "1000")
+    assert equivalent("1988-1996", "1988-96")
+    assert equivalent("3:50 p.m.", "3:50 PM")
+    assert equivalent("Republic of Ireland and Romania", "Ireland v Romania")
     assert not equivalent("Plastic Woman", "Plastic Man")
+    assert not equivalent("Ireland and Romania", "Ireland v Bulgaria")
 
 
 def test_deterministic_grade_extracts_line() -> None:

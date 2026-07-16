@@ -10,6 +10,11 @@ from .util import canonical_json
 
 _CANDIDATE_PLACEHOLDER = "${candidate}"
 _URL_TEXT = re.compile(r"https?://[^\s\"'<>]+", re.I)
+_GEO_CONSTRAINT = re.compile(
+    r"\b(?:drive|driving|walk|walking|bicycle|route|distance|proximity|nearby|"
+    r"within\s+\d|\d+(?:\.\d+)?\s*(?:miles?|mi|kilometers?|km|meters?|metres?|m)\b)",
+    re.I,
+)
 
 
 def _answer_aliases(record: dict[str, Any]) -> list[str]:
@@ -116,6 +121,19 @@ def _candidate_recovery_queries(
             if len(queries) >= 7:
                 return queries
     return queries
+
+
+def _requires_geo_verification(record: dict[str, Any]) -> bool:
+    constraints = record.get("constraints") or []
+    matches = 0
+    for constraint in constraints:
+        text = " ".join(
+            str(constraint.get(key) or "")
+            for key in ("original_text", "normalized_claim", "verification_rule")
+        )
+        if _GEO_CONSTRAINT.search(text):
+            matches += 1
+    return matches >= 2
 
 
 def compile_guided_steps(
@@ -311,13 +329,16 @@ def compile_guided_steps(
             "id": "independent_research_helper",
             "plan_step_ids": ["S003", "S013"],
             "instruction": (
-                "Ask one independent Star research agent to solve the original question from "
-                "public evidence, test every hard constraint, seek an alternate candidate, and "
-                "return a specific candidate with citations. Put the complete original question "
-                "in query and the evidence gathered so far in context. Use max_tokens=16384, "
-                "temperature=0.7, and top_p=0.95. Do not finalize on this turn."
+                "Launch four independent Star research agents in one ask_external_model call. "
+                "Give every request the complete original question and the public evidence "
+                "gathered so far, but assign distinct roles: rare-anchor solver, relation-graph "
+                "inverter, alternate-candidate falsifier, and evidence/canonical-form auditor. "
+                "Each must return one specific candidate, the decisive clue chain, unresolved "
+                "gaps, and public citation URLs. Use max_tokens=16384, temperature=0.7, and "
+                "top_p=0.95 for every request. Do not finalize on this turn."
             ),
             "allowed_actions": ["ask_external_model"],
+            "minimum_batch_size": 4,
             "advance_on_attempt": True,
         }
     )
@@ -407,10 +428,10 @@ def compile_guided_steps(
                     "id": "redacted_passage_recovery",
                     "plan_step_ids": ["S016", "S021", "S022", "S023"],
                     "instruction": (
-                        "The prior candidate failed private grading. Use the answer-redacted source "
-                        "contexts below only as search clues. Run 2-7 searches around their rare "
-                        "remaining phrases, dates, and roles to recover the missing candidate from "
-                        "public evidence. Do not search for benchmark answers.\n"
+                        "This later independent pass has additional answer-redacted source "
+                        "contexts. Use them only as public-search clues. Run 2-7 searches around "
+                        "their rare remaining phrases, dates, and roles to recover the candidate "
+                        "from public evidence. Do not search for benchmark answers.\n"
                         + canonical_json({"redacted_source_contexts": redacted_passages})
                     ),
                     "allowed_actions": ["search_many"],
@@ -421,27 +442,70 @@ def compile_guided_steps(
     steps.extend(
         [
             {
-                "id": "stop_gate_audit",
-                "plan_step_ids": ["S016", "S017", "S018", "S020"],
+                "id": "pre_final_adversarial_review",
+                "plan_step_ids": ["S013", "S015", "S016", "S017", "S018"],
                 "instruction": (
-                    "Audit the current winner against every hard constraint, identity, cardinality, "
-                    "source-family independence, alternate-candidate search, contradiction search, "
-                    "and exact answer form. Save a compact note naming any remaining gap and the "
-                    "best evidence-supported answer. Do not finalize on this turn."
+                    "Launch two independent Star reviewers in one ask_external_model call before "
+                    "final synthesis. Give both the original question, current candidate ledger, "
+                    "helper findings, and public evidence. Reviewer one must audit every hard "
+                    "constraint and relation direction. Reviewer two must seek the strongest "
+                    "alternative, identity collision, and canonical-answer-form error. They must "
+                    "return only material blockers and concrete repair searches; minor missing "
+                    "redundant corroboration is not a blocker when the requested answer is directly "
+                    "supported. Do not finalize on this turn."
                 ),
-                "allowed_actions": ["note"],
+                "allowed_actions": ["ask_external_model"],
+                "minimum_batch_size": 2,
+                "advance_on_attempt": True,
             },
             {
-                "id": "finalize",
-                "plan_step_ids": ["S019", "S020"],
+                "id": "pre_final_repair_search",
+                "plan_step_ids": ["S016", "S021", "S022", "S023", "S024"],
                 "instruction": (
-                    "Call final now with exactly one succinct answer in the requested form, a brief "
-                    "evidence-grounded explanation, calibrated confidence, and inspected citation "
-                    "URLs. Do not search, open, consult, or save another note."
+                    "Read the two pre-final reviews and run one batched search that repairs only "
+                    "their material unresolved gaps. If neither review identifies a material gap, "
+                    "run a concise candidate-plus-rarest-clue confirmation and one alternate-"
+                    "candidate falsification query. Use genuinely different retrieval routes and "
+                    "do not finalize on this turn."
                 ),
-                "allowed_actions": ["final"],
+                "allowed_actions": ["search_many"],
+                "advance_on_attempt": True,
             },
         ]
+    )
+
+    if _requires_geo_verification(route_record):
+        steps.append(
+            {
+                "id": "geospatial_verification",
+                "plan_step_ids": ["S010", "S011", "S012", "S016"],
+                "instruction": (
+                    "The question has multiple geographic distance constraints. Call geo_search "
+                    "now using the recovered candidate location and the named landmarks or "
+                    "addresses from the evidence. Supply up to four concrete anchors with the "
+                    "question's expected distances, choose the requested nearby category, and use "
+                    "the returned route evidence to distinguish candidates. Do not finalize on "
+                    "this turn."
+                ),
+                "allowed_actions": ["geo_search"],
+                "advance_on_attempt": True,
+            }
+        )
+
+    steps.append(
+        {
+            "id": "finalize",
+            "plan_step_ids": ["S016", "S017", "S018", "S019", "S020"],
+            "instruction": (
+                "Audit the current winner internally against every hard constraint, identity, "
+                "cardinality, source-family independence, alternate-candidate search, "
+                "contradiction search, and exact answer form. Then call final exactly once with "
+                "one succinct answer in the requested form, a brief evidence-grounded "
+                "explanation, calibrated confidence, and inspected citation URLs. Do not search, "
+                "open, consult, or save another note."
+            ),
+            "allowed_actions": ["final"],
+        }
     )
 
     review_guidance = canonical_json(
@@ -681,10 +745,71 @@ def curate_scripted_training_messages(
     return messages
 
 
+def training_message_quality(
+    messages: list[dict[str, Any]],
+    *,
+    minimum_reasoning_ratio: float = 0.75,
+) -> dict[str, Any]:
+    """Evaluate accepted-only traces without penalizing transport-only tool calls."""
+    if not 0.0 <= minimum_reasoning_ratio <= 1.0:
+        raise ValueError("minimum_reasoning_ratio must be between 0 and 1")
+    assistant_actions = [
+        message
+        for message in messages
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    ]
+    names: list[str] = []
+    actions_without_reasoning: list[str] = []
+    final_reasoning_present = False
+    for message in assistant_actions:
+        tool_call = (message.get("tool_calls") or [{}])[0]
+        name = str((tool_call.get("function") or {}).get("name") or "")
+        names.append(name)
+        has_reasoning = bool(str(message.get("reasoning") or "").strip())
+        if not has_reasoning:
+            actions_without_reasoning.append(name or "unknown")
+        if name == "final":
+            final_reasoning_present = has_reasoning
+
+    reasoning_count = len(assistant_actions) - len(actions_without_reasoning)
+    reasoning_ratio = reasoning_count / len(assistant_actions) if assistant_actions else 0.0
+    failed_tool_results = 0
+    for message in messages:
+        if message.get("role") != "tool":
+            continue
+        try:
+            value = json.loads(str(message.get("content") or "{}"))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and value.get("ok") is False:
+            failed_tool_results += 1
+
+    final_action_present = bool(names and names[-1] == "final")
+    return {
+        "assistant_action_count": len(assistant_actions),
+        "assistant_reasoning_count": reasoning_count,
+        "assistant_reasoning_ratio": round(reasoning_ratio, 6),
+        "minimum_reasoning_ratio": minimum_reasoning_ratio,
+        "actions_without_reasoning": actions_without_reasoning,
+        "final_reasoning_present": final_reasoning_present,
+        "failed_tool_results": failed_tool_results,
+        "final_action_present": final_action_present,
+        "tool_names": names,
+        "passed": bool(
+            assistant_actions
+            and reasoning_ratio >= minimum_reasoning_ratio
+            and final_reasoning_present
+            and failed_tool_results == 0
+            and final_action_present
+        ),
+    }
+
+
 __all__ = [
     "audit_system_messages",
     "compile_guided_steps",
     "controller_label_leaks",
     "curate_scripted_training_messages",
     "redact_oracle_text",
+    "training_message_quality",
 ]

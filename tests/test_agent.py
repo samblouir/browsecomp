@@ -476,6 +476,28 @@ def test_scripted_guidance_step_requires_all_exact_queries() -> None:
     )
 
 
+def test_scripted_guidance_step_enforces_minimum_parallel_batch() -> None:
+    step = {
+        "allowed_actions": ["ask_external_model"],
+        "minimum_batch_size": 4,
+    }
+
+    assert AgentRunner._action_matches_scripted_step(
+        AgentAction(
+            action="ask_external_model",
+            payload={"requests": [{"query": str(index)} for index in range(4)]},
+        ),
+        step,
+    )
+    assert not AgentRunner._action_matches_scripted_step(
+        AgentAction(
+            action="ask_external_model",
+            payload={"requests": [{"query": "only one"}]},
+        ),
+        step,
+    )
+
+
 def test_single_source_attribution_question_requires_one_answer_naming_document() -> None:
     question = (
         "Several clues identify an entity. According to an article published in 2021, the first "
@@ -1292,6 +1314,29 @@ async def test_agent_keeps_tool_schema_stable_when_page_inspection_is_due(tmp_pa
         "note",
         "final",
     }
+
+
+@pytest.mark.asyncio
+async def test_agent_forces_scripted_required_tool_choice(tmp_path: Path) -> None:
+    model = FinalCaptureModel()
+    runner = AgentRunner(
+        ModelConfig(api_base="http://model.test/v1", api_key="k", model="m", protocol="tools"),
+        AgentConfig(),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=model,
+    )
+
+    await runner._query([], "tools", required_action="search_many")
+
+    assert model.kwargs["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "search_many"},
+    }
+    assert [tool["function"]["name"] for tool in model.kwargs["tools"]] == [
+        "search_many"
+    ]
 
 
 def test_result_has_urls_detects_batched_search_candidates() -> None:

@@ -8,6 +8,7 @@ from browsecomp250.guided_training import (
     compile_guided_steps,
     controller_label_leaks,
     curate_scripted_training_messages,
+    training_message_quality,
 )
 
 
@@ -117,6 +118,7 @@ def test_compiler_redacts_private_label_but_keeps_public_source_url() -> None:
         "instruction"
     ]
     assert any(step["id"] == "mapped_evidence_ledger" for step in steps)
+    assert all(step["id"] != "stop_gate_audit" for step in steps)
     recovery = next(step for step in steps if step["id"] == "answer_redacted_passage_recovery")
     assert "Secret Person" not in recovery["instruction"]
     assert "query_hints" in recovery["instruction"]
@@ -174,6 +176,44 @@ def test_compiler_supplies_route_queries_without_brittle_exact_match_gate() -> N
     ] == ["rare 1901", "archive 1901", "site:x 1901"]
     assert all("required_queries" not in step for step in query_steps)
     assert any(step["allowed_actions"] == ["ask_external_model"] for step in steps)
+    helper = next(step for step in steps if step["id"] == "independent_research_helper")
+    assert helper["minimum_batch_size"] == 4
+    review = next(step for step in steps if step["id"] == "pre_final_adversarial_review")
+    assert review["minimum_batch_size"] == 2
+
+
+def test_compiler_adds_geo_verification_for_multiple_distance_constraints() -> None:
+    route, full = _records(sources=False)
+    route["constraints"].extend(
+        [
+            {
+                "constraint_id": "C02",
+                "original_text": "The place is 3 miles driving from a hotel.",
+                "verification_rule": "Check the driving route.",
+            },
+            {
+                "constraint_id": "C03",
+                "original_text": "The place is 40 meters from a station.",
+                "verification_rule": "Check the distance.",
+            },
+        ]
+    )
+    full["constraints"] = route["constraints"]
+
+    steps, _ = compile_guided_steps(route, full)
+
+    geo = next(step for step in steps if step["id"] == "geospatial_verification")
+    assert geo["allowed_actions"] == ["geo_search"]
+    assert steps.index(geo) < len(steps) - 1
+
+
+def test_later_attempt_guidance_does_not_reveal_private_grading_feedback() -> None:
+    route, full = _records()
+    steps, review = compile_guided_steps(route, full, attempt=2)
+    controller_text = review + "\n" + "\n".join(step["instruction"] for step in steps)
+
+    assert "failed private grading" not in controller_text.casefold()
+    assert "prior candidate" not in controller_text.casefold()
 
 
 def test_curator_keeps_only_successful_guided_actions_and_reasoning() -> None:
@@ -318,3 +358,47 @@ def test_system_message_audit_does_not_trust_recorded_final_system() -> None:
     assert audit["passed"] is False
     assert audit["unexpected_system_message_count"] == 1
     assert audit["unexpected_recorded_final_system_count"] == 1
+
+
+def _assistant_tool_action(name: str, *, reasoning: str = "") -> dict:
+    message = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {"id": f"call-{name}", "function": {"name": name, "arguments": "{}"}}
+        ],
+    }
+    if reasoning:
+        message["reasoning"] = reasoning
+    return message
+
+
+def test_training_quality_allows_one_transport_action_without_reasoning() -> None:
+    messages = [
+        _assistant_tool_action("note", reasoning="Build the constraint ledger."),
+        _assistant_tool_action("open"),
+        _assistant_tool_action("search_many", reasoning="Close the remaining evidence gap."),
+        _assistant_tool_action("final", reasoning="Synthesize the supported answer."),
+    ]
+
+    quality = training_message_quality(messages)
+
+    assert quality["passed"] is True
+    assert quality["assistant_reasoning_ratio"] == 0.75
+    assert quality["actions_without_reasoning"] == ["open"]
+    assert quality["final_reasoning_present"] is True
+
+
+def test_training_quality_requires_reasoning_on_final_action() -> None:
+    messages = [
+        _assistant_tool_action("note", reasoning="Build the constraint ledger."),
+        _assistant_tool_action("open", reasoning="Inspect the mapped source."),
+        _assistant_tool_action("search_many", reasoning="Falsify the candidate."),
+        _assistant_tool_action("final"),
+    ]
+
+    quality = training_message_quality(messages)
+
+    assert quality["assistant_reasoning_ratio"] == 0.75
+    assert quality["final_reasoning_present"] is False
+    assert quality["passed"] is False

@@ -35,6 +35,25 @@ def pid_alive(pid: int | None) -> bool:
     return True
 
 
+def latest_active_event_mtime(run_dir: Path, active_trials: object) -> float:
+    if not isinstance(active_trials, dict):
+        return 0.0
+    latest = 0.0
+    items_dir = run_dir / "items"
+    for raw_index in active_trials:
+        try:
+            prefix = f"{int(raw_index):04d}-"
+        except (TypeError, ValueError):
+            continue
+        for item_dir in items_dir.glob(prefix + "*"):
+            for event_path in item_dir.glob("attempt-*-events.jsonl"):
+                try:
+                    latest = max(latest, event_path.stat().st_mtime)
+                except OSError:
+                    continue
+    return latest
+
+
 def write_watcher_status(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -114,6 +133,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Watch a BrowseComp-250 Star run")
     parser.add_argument("run_dir", type=Path)
     parser.add_argument("--pid", type=int)
+    parser.add_argument(
+        "--status-file",
+        type=Path,
+        help="Read this runner status file instead of RUN_DIR/status.json.",
+    )
     parser.add_argument("--interval", type=float, default=15.0)
     parser.add_argument("--stale-seconds", type=float, default=600.0)
     parser.add_argument("--status-out", type=Path)
@@ -127,7 +151,7 @@ def main() -> int:
         parser.error("--failure-confirmations must be at least 1")
 
     run_dir = args.run_dir.resolve()
-    source = run_dir / "status.json"
+    source = args.status_file.resolve() if args.status_file else run_dir / "status.json"
     output = args.status_out or (run_dir / "watcher_status.json")
     consecutive_problem_checks = 0
 
@@ -146,7 +170,9 @@ def main() -> int:
         normalized = normalized_status(data)
         state = str(normalized["state"])
         updated_at = parse_time(normalized.get("updated_at"))
-        age = max(0.0, now - updated_at) if updated_at else None
+        event_mtime = latest_active_event_mtime(run_dir, normalized.get("active_trials"))
+        latest_activity = max(updated_at, event_mtime)
+        age = max(0.0, now - latest_activity) if latest_activity else None
         if state not in TERMINAL_STATES and age is not None and age > args.stale_seconds:
             problems.append(f"no_progress_for_{int(age)}s")
         if state not in TERMINAL_STATES and not pid_alive(args.pid):
@@ -163,6 +189,7 @@ def main() -> int:
             "target": int(normalized["target"]),
             "active_trials": normalized["active_trials"],
             "status_age_seconds": age,
+            "latest_active_event_mtime": event_mtime or None,
             "runner_pid": args.pid,
             "problems": problems,
             "done": state in TERMINAL_STATES,
