@@ -160,9 +160,10 @@ Campaign reports must name the provider actually used; results collected with
 different providers must be reported as separate strata or with per-row
 provenance. The configs expose the caller-owned
 `ask_external_model` tool through an isolated Star-2 agent that can use the
-same search, page-open, and find tools. Hard items receive one strategy-first
-helper after eight searches; further review is evidence-triggered rather than a
-mandatory full council. A helper must perform an independent falsification
+same search, page-open, and find tools. The main agent invokes this helper for
+genuinely hard or ambiguous items; duplicate-search recovery and finalization
+rescue can also invoke it when observable failure signals appear. No helper is
+forced merely because a fixed search count was reached. A helper must perform an independent falsification
 search before finalizing, and its reviews must preserve clue relation types and
 provide their own citations. Source support remains a hard gate on normal turns;
 the configured final hard-budget turn may return one concrete, answer-type-valid

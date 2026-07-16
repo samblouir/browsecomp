@@ -105,6 +105,7 @@ def test_star_profiles_use_selective_star2_help(
 ) -> None:
     parsed = load_config(Path(__file__).parents[1] / "configs" / name)
     assert parsed.agent.automatic_external_requests == automatic_requests
+    assert parsed.agent.automatic_external_after_search_calls == 0
     assert parsed.agent.automatic_external_strategy_recovery is strategy_recovery
     assert parsed.agent.automatic_finalization_rescue_after_seconds == rescue_seconds
     assert parsed.external_model.mode == "agent"
@@ -119,6 +120,12 @@ def test_star_profiles_use_selective_star2_help(
     if name == "star-headline.yaml":
         assert parsed.agent.max_history_chars == 300000
         assert parsed.run.task_timeout_seconds == 3600
+
+
+def test_star_profile_can_explicitly_enable_search_count_helper(monkeypatch) -> None:
+    monkeypatch.setenv("BC250_AUTOMATIC_EXTERNAL_AFTER_SEARCH_CALLS", "12")
+    parsed = load_config(Path(__file__).parents[1] / "configs" / "star-headline.yaml")
+    assert parsed.agent.automatic_external_after_search_calls == 12
 
 
 def test_unknown_config_field_is_rejected(tmp_path: Path) -> None:

@@ -128,7 +128,7 @@ agent:
   enable_search_many: true
   enable_open_many: true
   max_batch_size: 7
-  automatic_external_after_search_calls: 8
+  automatic_external_after_search_calls: ${BC250_AUTOMATIC_EXTERNAL_AFTER_SEARCH_CALLS:-0}
   automatic_external_requests: 1
   automatic_page_inspection_after_search_actions: 2
   automatic_page_inspection_count: 4
