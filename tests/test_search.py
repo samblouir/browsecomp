@@ -593,6 +593,44 @@ async def test_bing_ssh_adapter_uses_bounded_escaped_rss_command(
     await provider.close()
 
 
+@pytest.mark.asyncio
+async def test_bing_ssh_instances_share_one_host_throttle(tmp_path: Path) -> None:
+    config = SearchConfig(
+        provider="bing_ssh",
+        bing_ssh_host="shared-bing.test",
+        bing_ssh_max_concurrency=1,
+        cache_mode="off",
+        cache_path=tmp_path / "bing-shared.sqlite3",
+    )
+    first = BingSSHSearchProvider(config)
+    second = BingSSHSearchProvider(config)
+
+    assert first._host_throttle is second._host_throttle
+    assert first._host_throttle.max_concurrency == 1
+
+    await first.close()
+    await second.close()
+
+
+@pytest.mark.asyncio
+async def test_yahoo_ssh_instances_share_one_host_throttle(tmp_path: Path) -> None:
+    config = SearchConfig(
+        provider="yahoo_ssh",
+        yahoo_ssh_host="shared-yahoo.test",
+        yahoo_max_concurrency=1,
+        cache_mode="off",
+        cache_path=tmp_path / "yahoo-shared.sqlite3",
+    )
+    first = YahooSSHSearchProvider(config)
+    second = YahooSSHSearchProvider(config)
+
+    assert first._host_throttle is second._host_throttle
+    assert first._host_throttle.max_concurrency == 1
+
+    await first.close()
+    await second.close()
+
+
 @pytest.mark.parametrize(
     "document,match",
     [

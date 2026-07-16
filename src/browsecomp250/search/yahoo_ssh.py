@@ -20,6 +20,9 @@ class YahooSSHSearchProvider(YahooSearchProvider):
 
     name = "yahoo_ssh"
 
+    def _throttle_host(self) -> str:
+        return self.config.yahoo_ssh_host
+
     async def _search_live(self, query: str, count: int, offset: int) -> list[SearchResult]:
         query = " ".join(_CONTROL_TOKEN.sub(" ", query).split())
         if not query:
@@ -46,7 +49,8 @@ class YahooSSHSearchProvider(YahooSearchProvider):
             ]
         )
 
-        async with self._request_semaphore:
+        throttle = self._get_host_throttle()
+        async with throttle.semaphore:
             await self._wait_for_request_slot()
             process = await asyncio.create_subprocess_exec(
                 self.config.yahoo_ssh_bin,

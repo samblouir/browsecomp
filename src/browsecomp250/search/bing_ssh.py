@@ -5,12 +5,14 @@ import html
 import re
 import shlex
 import xml.etree.ElementTree as ET
+from contextlib import suppress
 from urllib.parse import urlencode, urlparse
 
 from bs4 import BeautifulSoup
 
 from ..types import SearchResult
 from .base import SearchError, SearchProvider
+from .shared_throttle import shared_host_throttle
 
 _CONTROL_TOKEN = re.compile(r"<\|.*?\|>")
 _MAX_REMOTE_RESPONSE_BYTES = 4_000_000
@@ -28,9 +30,19 @@ class BingSSHSearchProvider(SearchProvider):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._request_semaphore = asyncio.Semaphore(self.config.bing_ssh_max_concurrency)
-        self._pace_lock = asyncio.Lock()
-        self._next_request_at = 0.0
+        self._host_throttle = None
+        # Config validation and dry construction can happen outside an event loop.
+        with suppress(RuntimeError):
+            self._host_throttle = self._get_host_throttle()
+
+    def _get_host_throttle(self):
+        if self._host_throttle is None:
+            self._host_throttle = shared_host_throttle(
+                namespace=self.name,
+                host=self.config.bing_ssh_host,
+                max_concurrency=self.config.bing_ssh_max_concurrency,
+            )
+        return self._host_throttle
 
     async def _search_live(self, query: str, count: int, offset: int) -> list[SearchResult]:
         query = " ".join(_CONTROL_TOKEN.sub(" ", query).split())
@@ -58,7 +70,8 @@ class BingSSHSearchProvider(SearchProvider):
             ]
         )
 
-        async with self._request_semaphore:
+        throttle = self._get_host_throttle()
+        async with throttle.semaphore:
             await self._wait_for_request_slot()
             process = await asyncio.create_subprocess_exec(
                 self.config.bing_ssh_bin,
@@ -104,18 +117,20 @@ class BingSSHSearchProvider(SearchProvider):
         )
 
     async def _wait_for_request_slot(self) -> None:
-        async with self._pace_lock:
+        throttle = self._get_host_throttle()
+        async with throttle.pace_lock:
             loop = asyncio.get_running_loop()
-            delay = max(0.0, self._next_request_at - loop.time())
+            delay = max(0.0, throttle.next_request_at - loop.time())
             if delay:
                 await asyncio.sleep(delay)
-            self._next_request_at = loop.time() + self.config.bing_ssh_min_interval_seconds
+            throttle.next_request_at = loop.time() + self.config.bing_ssh_min_interval_seconds
 
     async def _extend_cooldown(self) -> None:
-        async with self._pace_lock:
+        throttle = self._get_host_throttle()
+        async with throttle.pace_lock:
             loop = asyncio.get_running_loop()
-            self._next_request_at = max(
-                self._next_request_at,
+            throttle.next_request_at = max(
+                throttle.next_request_at,
                 loop.time() + self.config.bing_ssh_error_cooldown_seconds,
             )
 
