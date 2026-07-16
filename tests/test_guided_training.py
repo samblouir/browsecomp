@@ -343,7 +343,7 @@ def test_document_and_designer_question_uses_native_document_sources_not_art_mus
 
 
 @pytest.mark.asyncio
-async def test_guided_worker_and_star2_helpers_fail_closed_on_unsupported_finals(
+async def test_guided_parent_owns_blocking_final_gate_while_helpers_return_cited_leads(
     tmp_path: Path,
 ) -> None:
     config = load_config(Path("configs/star-headline.yaml"))
@@ -359,7 +359,8 @@ async def test_guided_worker_and_star2_helpers_fail_closed_on_unsupported_finals
     try:
         assert resources.config.agent.require_opened_citation_support is True
         assert resources.config.agent.allow_unsupported_final_at_hard_budget is False
-        assert resources.external_model.agent_config.require_opened_citation_support is True
+        assert resources.external_model.agent_config.require_citations is True
+        assert resources.external_model.agent_config.require_opened_citation_support is False
         assert resources.external_model.agent_config.allow_unsupported_final_at_hard_budget is False
     finally:
         await resources.close()

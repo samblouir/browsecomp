@@ -508,7 +508,9 @@ def worker_resources(
         deep=True,
         update={
             "require_citations": True,
-            "require_opened_citation_support": True,
+            # Helpers produce independently sourced leads. The parent immediately opens
+            # their returned URLs and owns the blocking exact-answer evidence gate.
+            "require_opened_citation_support": False,
             "allow_unsupported_final_at_hard_budget": False,
         },
     )
