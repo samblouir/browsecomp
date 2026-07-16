@@ -313,6 +313,9 @@ class StagnatingSearchModel:
                     content=('{"action":"search","query":"entity first documented use 2012-2023"}')
                 ),
                 ModelResponse(
+                    content=('{"action":"search","query":"entity first documented use 2012-2023"}')
+                ),
+                ModelResponse(
                     content=(
                         '{"action":"final","explanation":"strategy evidence",'
                         '"exact_answer":"Answer","confidence":85,'
@@ -978,14 +981,14 @@ async def test_agent_rejects_final_until_required_independent_search(tmp_path: P
             protocol="tools",
         ),
         AgentConfig(
-            max_steps=3,
+            max_steps=4,
             max_search_calls=2,
             min_search_calls_before_final=1,
             require_citations=True,
         ),
         BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
         FakeSearch(tmp_path),
-        FakeBrowser(),
+        SuccessfulBrowser(),
         model_client=model,
     )
     outcome = await runner.run("Question")
@@ -2183,7 +2186,7 @@ async def test_repeated_search_uses_one_external_strategy_recovery(tmp_path: Pat
             response_chain=False,
         ),
         AgentConfig(
-            max_steps=3,
+            max_steps=4,
             max_search_calls=5,
             automatic_external_after_search_calls=0,
             automatic_page_inspection_after_search_actions=0,
@@ -2191,7 +2194,7 @@ async def test_repeated_search_uses_one_external_strategy_recovery(tmp_path: Pat
         ),
         BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
         search,
-        FakeBrowser(),
+        SuccessfulBrowser(),
         model_client=StagnatingSearchModel(),
         external_model_config=ExternalModelConfig(
             enabled=True,
@@ -2235,7 +2238,7 @@ async def test_strategy_recovery_suppresses_redundant_automatic_consultation(
             response_chain=False,
         ),
         AgentConfig(
-            max_steps=3,
+            max_steps=4,
             max_search_calls=5,
             automatic_external_after_search_calls=2,
             automatic_external_requests=1,
@@ -2244,7 +2247,7 @@ async def test_strategy_recovery_suppresses_redundant_automatic_consultation(
         ),
         BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
         search,
-        FakeBrowser(),
+        SuccessfulBrowser(),
         model_client=StagnatingSearchModel(),
         external_model_config=ExternalModelConfig(
             enabled=True,

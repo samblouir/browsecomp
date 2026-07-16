@@ -437,6 +437,7 @@ class AgentRunner:
                 and original_action.action in {"search", "search_many"}
                 and self.agent_config.automatic_external_strategy_recovery
                 and not automatic_strategy_recovery_attempted
+                and consecutive_duplicate_actions > 0
                 and self.external_model is not None
                 and self.external_model_config.enabled
                 and external_model_calls + 1 < self.external_model_config.max_calls_per_task
