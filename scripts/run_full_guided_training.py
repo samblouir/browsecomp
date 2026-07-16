@@ -489,6 +489,10 @@ def worker_resources(
     config.agent.automatic_finalization_rescue_after_rejections = 0
     config.agent.automatic_finalization_rescue_after_seconds = 0
     config.agent.force_final_after_seconds = 0
+    # The workers expose a 262,144-token physical window. Bound the full serialized
+    # retained history, including tool arguments, while preserving the required
+    # 16,384-token generation budget and room for tool schemas/controller prompts.
+    config.agent.max_history_chars = min(config.agent.max_history_chars, 180_000)
     config.external_model.agent_api_base = star2_endpoint
     config.external_model.agent_model = "frontierrl/star-2"
     config.external_model.temperature = 0.7
@@ -499,6 +503,10 @@ def worker_resources(
     config.external_model.agent_force_final_after_seconds = max(
         config.external_model.agent_force_final_after_seconds,
         900,
+    )
+    config.external_model.agent_max_history_chars = min(
+        config.external_model.agent_max_history_chars,
+        180_000,
     )
     config.external_model.agent_routing_backend_pool = []
     model_client = OpenAICompatibleClient(settings_from_model_config(config.model))

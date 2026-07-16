@@ -2955,6 +2955,12 @@ def test_history_compaction_preserves_star_helper_milestone_and_bounds_payload(
         {"role": "user", "content": initial_user},
     ]
     for index in range(5):
+        arguments = json.dumps(
+            {
+                "query": "clue",
+                "oversized_historical_argument": "y" * 100_000,
+            }
+        )
         messages.append(
             {
                 "role": "assistant",
@@ -2963,7 +2969,7 @@ def test_history_compaction_preserves_star_helper_milestone_and_bounds_payload(
                     {
                         "id": f"call-{index}",
                         "type": "function",
-                        "function": {"name": "search", "arguments": '{"query":"clue"}'},
+                        "function": {"name": "search", "arguments": arguments},
                     }
                 ],
             }
@@ -2980,9 +2986,21 @@ def test_history_compaction_preserves_star_helper_milestone_and_bounds_payload(
 
     compacted = runner._compact_history(messages, initial_user, [], {})
     compacted_content = "\n".join(str(message.get("content") or "") for message in compacted)
+    retained_arguments = [
+        call["function"]["arguments"]
+        for message in compacted
+        for call in message.get("tool_calls", [])
+    ]
 
-    assert len(compacted_content) <= 30_000 + len(compacted) - 1
+    assert runner._history_payload_chars(messages) > 500_000
+    assert runner._history_payload_chars(compacted) <= 30_000
     assert "independent_external_consultation" in compacted_content
+    assert retained_arguments
+    assert all(isinstance(json.loads(arguments), dict) for arguments in retained_arguments)
+    assert any(
+        json.loads(arguments).get("compacted_historical_tool_arguments") is True
+        for arguments in retained_arguments
+    )
     assert compacted[0]["role"] == "system"
     assert compacted[1]["role"] == "user"
     assert compacted[3]["role"] == "assistant"

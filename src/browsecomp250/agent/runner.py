@@ -5429,7 +5429,7 @@ class AgentRunner:
         notes: list[str],
         opened: dict[str, PageDocument],
     ) -> list[dict[str, Any]]:
-        size = sum(len(str(message.get("content", ""))) for message in messages)
+        size = self._history_payload_chars(messages)
         if size <= self.agent_config.max_history_chars:
             return messages
         unique_pages: dict[str, PageDocument] = {}
@@ -5462,7 +5462,7 @@ class AgentRunner:
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": initial_user},
         ]
-        fixed_prefix_chars = sum(len(str(message.get("content") or "")) for message in prefix)
+        fixed_prefix_chars = self._history_payload_chars(prefix)
         summary_text = "Deterministic history compaction:\n" + canonical_json(summary)
         summary_budget = max(
             0,
@@ -5477,9 +5477,19 @@ class AgentRunner:
         tail_start = max(2, len(messages) - 8)
         while tail_start < len(messages) and messages[tail_start].get("role") == "tool":
             tail_start += 1
-        tail = [dict(message) for message in messages[tail_start:]]
+        tail = [
+            self._compact_historical_tool_arguments(
+                message,
+                max_argument_chars=min(4_000, self.agent_config.max_history_chars // 16),
+            )
+            for message in messages[tail_start:]
+        ]
 
-        fixed_chars = sum(len(str(message.get("content") or "")) for message in prefix)
+        tail_without_content = [
+            {**message, "content": ""} if "content" in message else dict(message)
+            for message in tail
+        ]
+        fixed_chars = self._history_payload_chars([*prefix, *tail_without_content])
         content_indices = [
             index for index, message in enumerate(tail) if str(message.get("content") or "")
         ]
@@ -5492,7 +5502,25 @@ class AgentRunner:
             tail[index]["content"] = truncate_middle(content, per_message_chars)
 
         compacted = [*prefix, *tail]
-        compacted_size = sum(len(str(message.get("content") or "")) for message in compacted)
+        compacted_size = self._history_payload_chars(compacted)
+        while compacted_size > self.agent_config.max_history_chars and len(tail) > 2:
+            tail.pop(0)
+            while tail and tail[0].get("role") == "tool":
+                tail.pop(0)
+            compacted = [*prefix, *tail]
+            compacted_size = self._history_payload_chars(compacted)
+        if compacted_size > self.agent_config.max_history_chars:
+            overflow = compacted_size - self.agent_config.max_history_chars
+            for message in reversed(compacted):
+                content = str(message.get("content") or "")
+                if not content:
+                    continue
+                keep = max(0, len(content) - overflow - 256)
+                message["content"] = truncate_middle(content, keep)
+                compacted_size = self._history_payload_chars(compacted)
+                if compacted_size <= self.agent_config.max_history_chars:
+                    break
+                overflow = compacted_size - self.agent_config.max_history_chars
         self._emit(
             "history_compacted",
             before_chars=size,
@@ -5501,6 +5529,47 @@ class AgentRunner:
             retained_tail_messages=len(tail),
             preserved_milestones=len(milestone_evidence),
         )
+        return compacted
+
+    @staticmethod
+    def _history_payload_chars(messages: list[dict[str, Any]]) -> int:
+        """Count the serialized message payload, including historical tool arguments."""
+
+        return len(canonical_json(messages))
+
+    @staticmethod
+    def _compact_historical_tool_arguments(
+        message: dict[str, Any],
+        *,
+        max_argument_chars: int,
+    ) -> dict[str, Any]:
+        compacted = dict(message)
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return compacted
+        compacted_calls: list[Any] = []
+        for value in tool_calls:
+            if not isinstance(value, dict):
+                compacted_calls.append(value)
+                continue
+            call = dict(value)
+            raw_function = value.get("function")
+            if not isinstance(raw_function, dict):
+                compacted_calls.append(call)
+                continue
+            function = dict(raw_function)
+            arguments = str(function.get("arguments") or "")
+            if len(arguments) > max_argument_chars:
+                function["arguments"] = canonical_json(
+                    {
+                        "compacted_historical_tool_arguments": True,
+                        "original_chars": len(arguments),
+                        "sha256": hashlib.sha256(arguments.encode("utf-8")).hexdigest(),
+                    }
+                )
+            call["function"] = function
+            compacted_calls.append(call)
+        compacted["tool_calls"] = compacted_calls
         return compacted
 
     def _final_outcome(

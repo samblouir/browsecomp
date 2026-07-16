@@ -359,9 +359,11 @@ async def test_guided_parent_owns_blocking_final_gate_while_helpers_return_cited
     try:
         assert resources.config.agent.require_opened_citation_support is True
         assert resources.config.agent.allow_unsupported_final_at_hard_budget is False
+        assert resources.config.agent.max_history_chars == 180_000
         assert resources.external_model.agent_config.require_citations is True
         assert resources.external_model.agent_config.require_opened_citation_support is False
         assert resources.external_model.agent_config.allow_unsupported_final_at_hard_budget is False
+        assert resources.config.external_model.agent_max_history_chars == 180_000
     finally:
         await resources.close()
 
