@@ -273,6 +273,8 @@ class AgentRunner:
         notes: list[str] = []
         opened: dict[str, PageDocument] = {}
         evidence_journal: list[dict[str, Any]] = []
+        scripted_candidate_urls: list[str] = []
+        scripted_candidate_url_keys: set[str] = set()
         geo_evidence: list[dict[str, Any]] = []
         search_calls = page_opens = find_calls = retrieved_chars = external_model_calls = 0
         parse_failures = 0
@@ -350,6 +352,38 @@ class AgentRunner:
             scripted_required_action: str | None = None
             if scripted_guidance_steps and scripted_step_index < len(scripted_guidance_steps):
                 current_scripted_step = scripted_guidance_steps[scripted_step_index]
+                scripted_actions = {
+                    str(value).strip()
+                    for value in current_scripted_step.get("allowed_actions", [])
+                    if str(value).strip()
+                }
+                if (
+                    scripted_actions in ({"open"}, {"open_many"})
+                    and not current_scripted_step.get("required_urls")
+                ):
+                    source_urls = self._scripted_open_fallback_urls(
+                        scripted_candidate_urls,
+                        opened=opened,
+                        limit=(1 if scripted_actions == {"open"} else self.agent_config.max_batch_size),
+                    )
+                    if source_urls:
+                        current_scripted_step["required_urls"] = source_urls
+                        current_scripted_step["minimum_batch_size"] = len(source_urls)
+                        current_scripted_step["maximum_batch_size"] = len(source_urls)
+                        current_scripted_step["instruction"] = (
+                            str(current_scripted_step.get("instruction") or "").rstrip()
+                            + " Open exactly the public result URLs below. They were recovered "
+                            "from prior evidence waves after the immediately preceding discovery "
+                            "action returned no usable URLs.\n"
+                            + canonical_json({"required_source_urls": source_urls})
+                        )
+                        self._emit(
+                            "scripted_guidance_dynamic_contract_bound",
+                            step=step,
+                            source_scripted_step_id="prior_evidence_wave",
+                            target_scripted_step_id=current_scripted_step.get("id"),
+                            required_urls=source_urls,
+                        )
                 scripted_step_attempts += 1
                 if scripted_step_attempts > scripted_step_max_attempts:
                     failure = (
@@ -365,11 +399,6 @@ class AgentRunner:
                         scripted_step=current_scripted_step,
                     )
                     break
-                scripted_actions = {
-                    str(value).strip()
-                    for value in current_scripted_step.get("allowed_actions", [])
-                    if str(value).strip()
-                }
                 if len(scripted_actions) == 1:
                     scripted_required_action = next(iter(scripted_actions))
                 scripted_force_final = scripted_required_action == "final"
@@ -2228,6 +2257,16 @@ class AgentRunner:
                 result=result,
             )
 
+            for url in self._candidate_urls_from_result(
+                result,
+                limit=self.agent_config.max_batch_size * 4,
+            ):
+                key = self._evidence_url_key(url)
+                if not key or key in scripted_candidate_url_keys:
+                    continue
+                scripted_candidate_url_keys.add(key)
+                scripted_candidate_urls.append(url)
+
             if (
                 current_scripted_step is not None
                 and current_scripted_step.get("id") == "answer_blind_query_strategy"
@@ -2948,6 +2987,38 @@ class AgentRunner:
                     if len(selected) >= limit:
                         return selected
         return selected
+
+    @classmethod
+    def _scripted_open_fallback_urls(
+        cls,
+        known_urls: list[str],
+        *,
+        opened: dict[str, PageDocument],
+        limit: int,
+    ) -> list[str]:
+        """Recover a deterministic open batch when the latest discovery wave returned no URLs."""
+
+        if limit <= 0:
+            return []
+        opened_keys = {
+            key
+            for document in opened.values()
+            for value in (document.requested_url, document.final_url)
+            for key in [cls._evidence_url_key(value)]
+            if key
+        }
+        unique: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for url in known_urls:
+            key = cls._evidence_url_key(url)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            unique.append((url, key))
+        unopened = [url for url, key in unique if key not in opened_keys]
+        if unopened:
+            return unopened[:limit]
+        return [url for url, _ in unique[:limit]]
 
     @classmethod
     def _blocking_guidance_review_payload(cls, result: dict[str, Any]) -> dict[str, Any]:

@@ -14,6 +14,7 @@ from browsecomp250.config import (
     ModelConfig,
     SearchConfig,
 )
+from browsecomp250.search.base import SearchError
 from browsecomp250.types import AgentAction, ModelResponse, PageDocument, SearchResult, Usage
 
 
@@ -133,6 +134,59 @@ class FinalCaptureModel:
         return ModelResponse(
             content='{"action":"final","explanation":"best answer","exact_answer":"Answer","confidence":80,"citations":["https://example.test"]}'
         )
+
+    async def close(self):
+        return None
+
+
+class ScriptedOpenRecoveryModel:
+    def __init__(self):
+        self.calls = []
+        self.responses = iter(
+            [
+                self._tool_response("call-good", "search_many", {"queries": ["good"]}),
+                self._tool_response("call-bad", "search_many", {"queries": ["bad"]}),
+                self._tool_response(
+                    "call-wrong-open",
+                    "search_many",
+                    {"queries": ["model ignored the forced open tool"]},
+                ),
+                self._tool_response(
+                    "call-final",
+                    "final",
+                    {
+                        "explanation": "Recovered evidence supports the answer.",
+                        "exact_answer": "Answer",
+                        "confidence": 90,
+                        "citations": ["https://example.test/prior"],
+                    },
+                ),
+            ]
+        )
+
+    @staticmethod
+    def _tool_response(call_id, name, arguments):
+        return ModelResponse(
+            content="",
+            raw_message={
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": json.dumps(arguments),
+                        },
+                    }
+                ],
+            },
+            finish_reason="tool_calls",
+        )
+
+    async def chat(self, messages, **kwargs):
+        self.calls.append((deepcopy(messages), deepcopy(kwargs)))
+        return next(self.responses)
 
     async def close(self):
         return None
@@ -601,6 +655,137 @@ def test_candidate_urls_from_result_round_robins_helpers_and_search_queries() ->
         "https://two.example/1",
         "https://one.example/2",
     ]
+
+
+def test_scripted_open_fallback_prefers_unopened_prior_evidence_urls() -> None:
+    opened = PageDocument(
+        requested_url="https://source.test/already-opened",
+        final_url="https://source.test/already-opened",
+        title="Opened source",
+        text="Evidence",
+        content_type="text/plain",
+        status_code=200,
+    )
+
+    assert AgentRunner._scripted_open_fallback_urls(
+        [
+            "https://source.test/already-opened",
+            "https://source.test/new-a",
+            "https://source.test/new-a#fragment",
+            "https://source.test/new-b",
+        ],
+        opened={opened.final_url: opened},
+        limit=2,
+    ) == [
+        "https://source.test/new-a",
+        "https://source.test/new-b",
+    ]
+
+
+def test_scripted_open_fallback_reuses_prior_evidence_when_all_was_opened() -> None:
+    opened = PageDocument(
+        requested_url="http://source.test/evidence",
+        final_url="https://source.test/evidence",
+        title="Opened source",
+        text="Evidence",
+        content_type="text/plain",
+        status_code=200,
+    )
+
+    assert AgentRunner._scripted_open_fallback_urls(
+        ["https://source.test/evidence"],
+        opened={opened.final_url: opened},
+        limit=3,
+    ) == ["https://source.test/evidence"]
+
+
+@pytest.mark.asyncio
+async def test_scripted_open_step_recovers_prior_urls_after_failed_discovery(
+    tmp_path: Path,
+) -> None:
+    class FirstSuccessThenFailureSearch(FakeSearch):
+        async def search(self, query, count=None, offset=0):
+            del count, offset
+            if query == "bad":
+                raise SearchError("discovery failed")
+            return [
+                SearchResult(
+                    title="Prior evidence",
+                    url="https://example.test/prior",
+                    snippet="answer evidence",
+                )
+            ]
+
+        async def search_many(self, queries, count=None):
+            if "bad" in queries:
+                raise SearchError("discovery failed")
+            return [await self.search(query, count=count) for query in queries]
+
+    model = ScriptedOpenRecoveryModel()
+    events = []
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="tools",
+        ),
+        AgentConfig(
+            max_steps=4,
+            require_citations=False,
+            require_opened_citation_support=False,
+            automatic_external_strategy_recovery=False,
+            automatic_page_inspection_after_search_actions=0,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FirstSuccessThenFailureSearch(tmp_path),
+        SuccessfulBrowser(),
+        model_client=model,
+        event_sink=events.append,
+    )
+
+    outcome = await runner.run(
+        "Which answer is supported?",
+        scripted_guidance_steps=[
+            {
+                "id": "initial_discovery",
+                "allowed_actions": ["search_many"],
+                "required_queries": ["good"],
+                "minimum_batch_size": 1,
+                "maximum_batch_size": 1,
+            },
+            {
+                "id": "failed_discovery",
+                "allowed_actions": ["search_many"],
+                "required_queries": ["bad"],
+                "minimum_batch_size": 1,
+                "maximum_batch_size": 1,
+                "advance_on_attempt": True,
+            },
+            {
+                "id": "recovered_open",
+                "allowed_actions": ["open_many"],
+                "advance_on_attempt": True,
+            },
+            {"id": "finalize", "allowed_actions": ["final"]},
+        ],
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.exact_answer == "Answer"
+    assert model.calls[2][1]["tool_choice"]["function"]["name"] == "open_many"
+    opened_event = next(
+        event
+        for event in events
+        if event.get("event") == "action_selected" and event.get("step") == 3
+    )
+    assert opened_event["action"] == "open_many"
+    assert opened_event["payload"] == {"urls": ["https://example.test/prior"]}
+    assert any(
+        event.get("event") == "scripted_guidance_dynamic_contract_bound"
+        and event.get("source_scripted_step_id") == "prior_evidence_wave"
+        for event in events
+    )
 
 
 def test_scripted_guidance_step_requires_one_unique_role_tag_per_request() -> None:
