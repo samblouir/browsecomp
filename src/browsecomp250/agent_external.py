@@ -5,6 +5,7 @@ import json
 import re
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlparse
 
 from .agent import AgentRunner
 from .config import AgentConfig, BrowserConfig, ExternalModelConfig, ModelConfig
@@ -65,7 +66,13 @@ class AgentExternalModelBroker:
             deep=True,
             update={
                 "max_steps": config.agent_max_steps,
+                "force_final_after_seconds": config.agent_force_final_after_seconds,
                 "min_search_calls_before_final": config.agent_min_search_calls_before_final,
+                "max_search_calls": config.agent_max_search_calls,
+                "max_page_opens": config.agent_max_page_opens,
+                "max_find_calls": config.agent_max_find_calls,
+                "max_retrieved_chars": config.agent_max_retrieved_chars,
+                "max_history_chars": config.agent_max_history_chars,
                 "automatic_external_after_search_calls": 0,
                 "automatic_finalization_rescue_after_rejections": 0,
                 "automatic_finalization_rescue_after_seconds": 0,
@@ -187,14 +194,11 @@ class AgentExternalModelBroker:
                     timeout=self.config.timeout_seconds,
                 )
         except TimeoutError:
-            return {
-                "ok": False,
-                "status": "failed",
-                "provider": "frontierrl-agent",
-                "model": self.model_config.model,
-                "error": f"Star helper exceeded {self.config.timeout_seconds:g} seconds",
-                "agent_events": len(events),
-            }
+            return self._partial_timeout_result(
+                namespace=namespace,
+                events=events,
+                error=f"Star helper exceeded {self.config.timeout_seconds:g} seconds",
+            )
         except Exception as exc:  # noqa: BLE001 - return one failed sibling without cancelling batch
             return {
                 "ok": False,
@@ -205,6 +209,68 @@ class AgentExternalModelBroker:
                 "agent_events": len(events),
             }
         return self._result_from_outcome(request, outcome, namespace=namespace, events=events)
+
+    def _partial_timeout_result(
+        self,
+        *,
+        namespace: str,
+        events: list[dict[str, Any]],
+        error: str,
+    ) -> dict[str, Any]:
+        reasoning: list[str] = []
+        transcript: list[dict[str, Any]] = []
+        for event in events:
+            if event.get("event") == "model_response":
+                value = str(event.get("assistant_reasoning") or "").strip()
+                if value:
+                    reasoning.append(value)
+                transcript.append(event)
+        queries = self._search_queries_from_transcript(transcript)
+        citations = self._source_urls_from_events(events)
+        sections = ["Partial Star-2 research recovered after the helper timeout."]
+        if reasoning:
+            sections.append("Latest research notes:\n" + reasoning[-1][-12_000:])
+        if queries:
+            sections.append("Executed search queries:\n- " + "\n- ".join(queries[-12:]))
+        if citations:
+            sections.append("Observed source URLs:\n- " + "\n- ".join(citations[:12]))
+        content = "\n\n".join(sections)
+        return {
+            "ok": False,
+            "status": "failed",
+            "request_id": namespace,
+            "provider": "frontierrl-agent",
+            "model": self.model_config.model,
+            "content": content,
+            "error": error,
+            "agent_events": len(events),
+            "agent_search_queries": queries,
+            "citations": citations,
+        }
+
+    @staticmethod
+    def _source_urls_from_events(events: list[dict[str, Any]]) -> list[str]:
+        urls: list[str] = []
+        stack: list[Any] = [
+            event.get("result")
+            for event in events
+            if event.get("event") == "action_completed" and event.get("result") is not None
+        ]
+        visited = 0
+        while stack and visited < 20_000 and len(urls) < 40:
+            value = stack.pop()
+            visited += 1
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key in {"url", "final_url", "requested_url"} and isinstance(child, str):
+                        parsed = urlparse(child)
+                        if parsed.scheme in {"http", "https"} and parsed.netloc:
+                            urls.append(child)
+                    elif isinstance(child, (dict, list)):
+                        stack.append(child)
+            elif isinstance(value, list):
+                stack.extend(value)
+        return list(dict.fromkeys(urls))
 
     def _result_from_outcome(
         self,

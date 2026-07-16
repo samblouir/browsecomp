@@ -129,6 +129,13 @@ feeds, doctypes, empty result sets, oversized responses, and non-HTTP result
 links. Its host, pacing, concurrency, and timeout limits are frozen in the run
 lock, so Bing and Yahoo rows remain separately attributable benchmark strata.
 
+Star-2 research helpers retain the full configured 16,384-token generation
+budget per turn. Their separate action, evidence, and elapsed-research limits
+force a final tool turn instead of allowing exploratory browsing to consume the
+outer helper timeout. If a transport or model call still reaches that timeout,
+the broker returns the executed queries, observed source URLs, and latest
+research notes as explicitly partial evidence rather than discarding the work.
+
 The Star smoke, development, and headline profiles default to `brave` but honor
 an explicit `BC250_SEARCH_PROVIDER` override. The resolved provider is frozen in
 the run lock. Any provider change within a larger development campaign must be

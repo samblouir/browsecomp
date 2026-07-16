@@ -206,6 +206,7 @@ class AgentRunner:
             + canonical_json(
                 {
                     "max_steps": self.agent_config.max_steps,
+                    "force_final_after_seconds": self.agent_config.force_final_after_seconds,
                     "max_search_calls": self.agent_config.max_search_calls,
                     "max_page_opens": self.agent_config.max_page_opens,
                     "max_find_calls": self.agent_config.max_find_calls,
@@ -259,6 +260,11 @@ class AgentRunner:
                 query_started = time.perf_counter()
                 force_final_this_turn = (
                     force_final
+                    or (
+                        self.agent_config.force_final_after_seconds > 0
+                        and time.perf_counter() - started
+                        >= self.agent_config.force_final_after_seconds
+                    )
                     or self._near_budget(
                         search_calls,
                         page_opens,

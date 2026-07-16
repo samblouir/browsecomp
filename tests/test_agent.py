@@ -751,6 +751,44 @@ async def test_agent_forces_final_tool_choice_on_last_step(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_agent_forces_final_tool_choice_after_elapsed_research_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model = FinalCaptureModel()
+    calls = iter([0.0, 301.0, 301.0, 301.0])
+    monkeypatch.setattr(
+        "browsecomp250.agent.runner.time.perf_counter",
+        lambda: next(calls, 301.0),
+    )
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="tools",
+            max_output_tokens=16384,
+        ),
+        AgentConfig(
+            max_steps=4,
+            force_final_after_seconds=300,
+            require_citations=True,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=model,
+    )
+
+    outcome = await runner.run("Question")
+
+    assert outcome.status == "completed"
+    assert model.kwargs["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "final"},
+    }
+
+
+@pytest.mark.asyncio
 async def test_agent_keeps_tool_schema_stable_when_page_inspection_is_due(tmp_path: Path) -> None:
     model = FinalCaptureModel()
     runner = AgentRunner(

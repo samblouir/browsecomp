@@ -9,6 +9,12 @@
           "title": "Max Steps",
           "type": "integer"
         },
+        "force_final_after_seconds": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Force Final After Seconds",
+          "type": "number"
+        },
         "min_search_calls_before_final": {
           "default": 0,
           "maximum": 20,
@@ -422,8 +428,8 @@
           "type": "boolean"
         },
         "agent_max_steps": {
-          "default": 80,
-          "minimum": 1,
+          "default": 12,
+          "minimum": 2,
           "title": "Agent Max Steps",
           "type": "integer"
         },
@@ -433,6 +439,42 @@
           "minimum": 0,
           "title": "Agent Min Search Calls Before Final",
           "type": "integer"
+        },
+        "agent_max_search_calls": {
+          "default": 24,
+          "minimum": 1,
+          "title": "Agent Max Search Calls",
+          "type": "integer"
+        },
+        "agent_max_page_opens": {
+          "default": 32,
+          "minimum": 1,
+          "title": "Agent Max Page Opens",
+          "type": "integer"
+        },
+        "agent_max_find_calls": {
+          "default": 16,
+          "minimum": 0,
+          "title": "Agent Max Find Calls",
+          "type": "integer"
+        },
+        "agent_max_retrieved_chars": {
+          "default": 500000,
+          "minimum": 10000,
+          "title": "Agent Max Retrieved Chars",
+          "type": "integer"
+        },
+        "agent_max_history_chars": {
+          "default": 200000,
+          "minimum": 10000,
+          "title": "Agent Max History Chars",
+          "type": "integer"
+        },
+        "agent_force_final_after_seconds": {
+          "default": 300,
+          "minimum": 0,
+          "title": "Agent Force Final After Seconds",
+          "type": "number"
         },
         "agent_max_denoising_steps": {
           "default": 48,

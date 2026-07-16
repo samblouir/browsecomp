@@ -92,6 +92,13 @@ async def test_agent_external_broker_forces_star2_tools_and_runs_concurrently() 
             agent_api_key="real-key",
             agent_model="frontierrl/star-2",
             agent_routing_backend_pool=["star2-a", "star2-b"],
+            agent_max_steps=9,
+            agent_max_search_calls=18,
+            agent_max_page_opens=20,
+            agent_max_find_calls=11,
+            agent_max_retrieved_chars=240_000,
+            agent_max_history_chars=120_000,
+            agent_force_final_after_seconds=180,
             max_batch_size=4,
             max_concurrency=4,
         ),
@@ -125,6 +132,13 @@ async def test_agent_external_broker_forces_star2_tools_and_runs_concurrently() 
     assert config["model"].extra_body["vllm_xargs"] == {"frontierrl_max_denoising_steps": 48}
     assert config["model"].routing_backend_pool == ["star2-a", "star2-b"]
     assert config["agent"].min_search_calls_before_final == 1
+    assert config["agent"].max_steps == 9
+    assert config["agent"].max_search_calls == 18
+    assert config["agent"].max_page_opens == 20
+    assert config["agent"].max_find_calls == 11
+    assert config["agent"].max_retrieved_chars == 240_000
+    assert config["agent"].max_history_chars == 120_000
+    assert config["agent"].force_final_after_seconds == 180
     assert config["kwargs"]["external_model_broker"] is None
     assert config["kwargs"]["external_model_config"].enabled is False
 
@@ -215,3 +229,48 @@ def test_agent_external_broker_extracts_executed_search_queries() -> None:
         "rare collaborator archive",
         "candidate history",
     ]
+
+
+def test_agent_external_broker_salvages_partial_timeout_evidence() -> None:
+    broker = AgentExternalModelBroker(
+        ExternalModelConfig(enabled=True, mode="agent", agent_api_key="real-key"),
+        AgentConfig(require_citations=True),
+        BrowserConfig(),
+        search_provider=object(),
+        page_fetcher=object(),
+        model_client=_FakeModelClient(),
+        runner_factory=_FakeRunner,
+    )
+    result = broker._partial_timeout_result(
+        namespace="test:timeout",
+        error="timed out",
+        events=[
+            {
+                "event": "model_response",
+                "assistant_reasoning": "Candidate Alpha matches the rare clue.",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "search_many",
+                            "arguments": '{"queries":["Alpha archive","Alpha biography"]}',
+                        }
+                    }
+                ],
+            },
+            {
+                "event": "action_completed",
+                "result": {
+                    "pages": [
+                        {"final_url": "https://source.test/alpha", "text": "Evidence"},
+                        {"final_url": "file:///tmp/private", "text": "Ignore"},
+                    ]
+                },
+            },
+        ],
+    )
+
+    assert result["ok"] is False
+    assert result["request_id"] == "test:timeout"
+    assert "Candidate Alpha" in result["content"]
+    assert result["agent_search_queries"] == ["Alpha archive", "Alpha biography"]
+    assert result["citations"] == ["https://source.test/alpha"]

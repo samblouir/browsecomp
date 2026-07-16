@@ -145,8 +145,14 @@ external_model:
   agent_allow_empty_api_key: false
   agent_model: frontierrl/star-2
   agent_response_chain: ${BC250_EXTERNAL_AGENT_RESPONSE_CHAIN:-false}
-  agent_max_steps: 80
+  agent_max_steps: ${BC250_EXTERNAL_AGENT_MAX_STEPS:-12}
   agent_min_search_calls_before_final: 1
+  agent_max_search_calls: ${BC250_EXTERNAL_AGENT_MAX_SEARCH_CALLS:-24}
+  agent_max_page_opens: ${BC250_EXTERNAL_AGENT_MAX_PAGE_OPENS:-32}
+  agent_max_find_calls: ${BC250_EXTERNAL_AGENT_MAX_FIND_CALLS:-16}
+  agent_max_retrieved_chars: ${BC250_EXTERNAL_AGENT_MAX_RETRIEVED_CHARS:-500000}
+  agent_max_history_chars: ${BC250_EXTERNAL_AGENT_MAX_HISTORY_CHARS:-200000}
+  agent_force_final_after_seconds: ${BC250_EXTERNAL_AGENT_FORCE_FINAL_AFTER_SECONDS:-300}
   agent_max_denoising_steps: 48
 
 grader:

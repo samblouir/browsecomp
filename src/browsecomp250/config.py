@@ -244,8 +244,14 @@ class ExternalModelConfig(StrictConfigModel):
     agent_allow_empty_api_key: bool = False
     agent_model: str = "frontierrl/star-2"
     agent_response_chain: bool = True
-    agent_max_steps: int = Field(default=80, ge=1)
+    agent_max_steps: int = Field(default=12, ge=2)
     agent_min_search_calls_before_final: int = Field(default=1, ge=0, le=20)
+    agent_max_search_calls: int = Field(default=24, ge=1)
+    agent_max_page_opens: int = Field(default=32, ge=1)
+    agent_max_find_calls: int = Field(default=16, ge=0)
+    agent_max_retrieved_chars: int = Field(default=500_000, ge=10_000)
+    agent_max_history_chars: int = Field(default=200_000, ge=10_000)
+    agent_force_final_after_seconds: float = Field(default=300, ge=0)
     agent_max_denoising_steps: int = Field(default=48, ge=1, le=48)
     agent_routing_backend_pool: list[str] = Field(default_factory=list)
 
@@ -285,6 +291,7 @@ class BrowserConfig(StrictConfigModel):
 
 class AgentConfig(StrictConfigModel):
     max_steps: int = Field(default=80, ge=1)
+    force_final_after_seconds: float = Field(default=0, ge=0)
     min_search_calls_before_final: int = Field(default=0, ge=0, le=20)
     max_search_calls: int = Field(default=40, ge=0)
     max_page_opens: int = Field(default=100, ge=0)
