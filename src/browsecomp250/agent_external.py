@@ -18,10 +18,9 @@ _REQUIRED_HELPER_MODEL = "frontierrl/star-2"
 _STRATEGY_SYSTEM_PROMPT = """
 You are a retrieval-strategy controller. The supplied task asks for a query plan, not a factual
 answer. Read the supplied question, evidence, and prior queries, then return exactly one native
-final tool call immediately. Put the requested JSON object verbatim in final.explanation, set
+final tool call immediately without browsing. Put the requested JSON object verbatim in final.explanation, set
 final.exact_answer to "query strategy", confidence to a calibrated number, and citations to an
-empty list. Do not call search or other evidence tools unless the supplied context is genuinely
-insufficient to design distinct retrieval routes. Never search for benchmark dumps, canaries,
+empty list. Never search for benchmark dumps, canaries,
 leaked questions, or reference answers.
 """.strip()
 
@@ -237,6 +236,7 @@ class AgentExternalModelBroker:
             external_model_broker=None,
             event_sink=event_sink,
             system_prompt=_STRATEGY_SYSTEM_PROMPT if strategy_mode else None,
+            initial_force_final=strategy_mode,
         )
         try:
             async with self._semaphore:

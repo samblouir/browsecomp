@@ -229,6 +229,7 @@ async def test_agent_external_strategy_skips_factual_answer_evidence_gates() -> 
     assert config["agent"].min_search_calls_before_final == 0
     assert config["agent"].max_steps == 4
     assert "retrieval-strategy controller" in config["kwargs"]["system_prompt"]
+    assert config["kwargs"]["initial_force_final"] is True
 
 
 def test_agent_external_broker_extracts_executed_search_queries() -> None:

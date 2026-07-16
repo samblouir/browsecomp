@@ -137,6 +137,39 @@ class FinalCaptureModel:
         return None
 
 
+@pytest.mark.asyncio
+async def test_agent_can_force_final_tool_on_first_turn(tmp_path: Path) -> None:
+    model = FinalCaptureModel()
+    runner = AgentRunner(
+        ModelConfig(
+            api_base="http://model.test/v1",
+            api_key="k",
+            model="m",
+            protocol="tools",
+        ),
+        AgentConfig(
+            max_steps=1,
+            min_search_calls_before_final=0,
+            require_citations=False,
+            require_opened_citation_support=False,
+        ),
+        BrowserConfig(cache_path=tmp_path / "p.sqlite3", block_private_networks=False),
+        FakeSearch(tmp_path),
+        FakeBrowser(),
+        model_client=model,
+        initial_force_final=True,
+    )
+
+    outcome = await runner.run("Return a planning artifact")
+
+    assert outcome.status == "completed"
+    assert model.kwargs["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "final"},
+    }
+    assert [tool["function"]["name"] for tool in model.kwargs["tools"]] == ["final"]
+
+
 class SurfaceConstraintModel:
     def __init__(self):
         self.calls = []

@@ -175,6 +175,7 @@ class AgentRunner:
         external_model_broker: ExternalModelBroker | None = None,
         event_sink: Callable[[dict[str, Any]], None] | None = None,
         system_prompt: str | None = None,
+        initial_force_final: bool = False,
     ):
         self.model_config = model_config
         self.agent_config = agent_config
@@ -190,6 +191,7 @@ class AgentRunner:
         self.external_model_config = external_model_config or ExternalModelConfig()
         self.external_model = external_model_broker
         self.event_sink = event_sink
+        self.initial_force_final = initial_force_final
         self.system_prompt = AGENT_SYSTEM_PROMPT
         if system_prompt is not None:
             self.system_prompt = system_prompt.strip()
@@ -229,7 +231,7 @@ class AgentRunner:
         search_calls = page_opens = find_calls = retrieved_chars = external_model_calls = 0
         parse_failures = 0
         protocol = self.model_config.protocol
-        force_final = False
+        force_final = self.initial_force_final
         require_open = False
         search_streak = 0
         automatic_external_attempted = False
