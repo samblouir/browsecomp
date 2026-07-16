@@ -93,7 +93,7 @@ report: {}
     [
         ("star-dev-baseline.yaml", False, 3, 1, 0),
         ("star-smoke.yaml", False, 3, 1, 0),
-        ("star-headline.yaml", True, 4, 2, 900),
+        ("star-headline.yaml", True, 8, 2, 900),
     ],
 )
 def test_star_profiles_use_selective_star2_help(

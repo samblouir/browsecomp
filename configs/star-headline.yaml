@@ -130,7 +130,7 @@ external_model:
   temperature: 0.7
   top_p: 0.95
   max_output_tokens: 16384
-  max_calls_per_task: 4
+  max_calls_per_task: 8
   max_batch_size: 4
   max_concurrency: ${BC250_EXTERNAL_MAX_CONCURRENCY:-32}
   timeout_seconds: 900

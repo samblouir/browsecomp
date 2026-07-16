@@ -1210,6 +1210,7 @@ class AgentRunner:
                         )
                     consensus = self._external_answer_consensus(
                         consultations,
+                        question=question,
                         inspected_pages=evidence_pages,
                     )
                     if consensus is not None:
@@ -1237,10 +1238,10 @@ class AgentRunner:
                                 "instruction": (
                                     "Two independent Star-2 research branches reached the same "
                                     "exact answer, and at least one source they cited was opened "
-                                    "successfully. Reconcile this candidate with the supplied "
-                                    "evidence, then return the final action on the next turn. Do "
-                                    "not run another discovery search merely to restate the same "
-                                    "hypothesis."
+                                    "successfully and matched multiple terms from the original "
+                                    "question. Reconcile this candidate with the supplied evidence, "
+                                    "then return the final action on the next turn. Do not run "
+                                    "another discovery search merely to restate the same hypothesis."
                                 ),
                             }
                             force_final_after_external_consensus = True
@@ -2056,18 +2057,19 @@ class AgentRunner:
         cls,
         consultations: list[dict[str, Any]],
         *,
+        question: str,
         inspected_pages: list[dict[str, Any]],
     ) -> dict[str, Any] | None:
-        """Return exact Star-2 agreement only when a cited page was actually opened."""
+        """Return exact Star-2 agreement only when a cited, question-matched page was opened."""
 
-        inspected_urls: set[str] = set()
+        inspected_urls: dict[str, dict[str, Any]] = {}
         for page in inspected_pages:
             if not isinstance(page, dict) or page.get("error") or not page.get("text"):
                 continue
             for key in ("requested_url", "final_url"):
                 normalized_url = cls._evidence_url_key(str(page.get(key) or ""))
                 if normalized_url:
-                    inspected_urls.add(normalized_url)
+                    inspected_urls[normalized_url] = page
 
         grouped: dict[str, list[dict[str, Any]]] = {}
         seen_request_ids: set[str] = set()
@@ -2115,7 +2117,10 @@ class AgentRunner:
         supporting_citations = [
             citation
             for citation in cited_urls
-            if cls._evidence_url_key(citation) in inspected_urls
+            if (
+                (page := inspected_urls.get(cls._evidence_url_key(citation))) is not None
+                and cls._page_matches_question(question, page)
+            )
         ]
         if not supporting_citations:
             return None
@@ -2141,6 +2146,20 @@ class AgentRunner:
             return float(consultation.get("confidence") or 0)
         except (TypeError, ValueError):
             return 0.0
+
+    @classmethod
+    def _page_matches_question(cls, question: str, page: dict[str, Any]) -> bool:
+        question_terms = cls._search_query_terms(question) - _LINK_STOPWORDS
+        if not question_terms:
+            return False
+        page_terms = cls._search_query_terms(
+            f"{page.get('title') or ''}\n{page.get('text') or ''}"
+        )
+        required_overlap = min(
+            len(question_terms),
+            min(8, max(2, (len(question_terms) + 5) // 6)),
+        )
+        return len(question_terms & page_terms) >= required_overlap
 
     @staticmethod
     def _evidence_url_key(url: str) -> str:

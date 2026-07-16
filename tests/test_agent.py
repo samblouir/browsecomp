@@ -562,11 +562,11 @@ class ConsensusExternalModelBroker:
                 "model": "frontierrl/star-2",
                 "content": (
                     "Independent evidence supports Candidate Answer. "
-                    "https://source.test/evidence"
+                    "https://example.test/related-history"
                 ),
                 "exact_answer": "Candidate Answer",
                 "confidence": 80 - index,
-                "citations": ["https://source.test/evidence"],
+                "citations": ["https://example.test/related-history"],
                 "agent_search_queries": [],
             }
             for index, _ in enumerate(requests, start=1)
@@ -1380,11 +1380,18 @@ def test_external_answer_consensus_requires_matching_star2_answers_and_opened_ci
         {
             "requested_url": "http://example.test/evidence",
             "final_url": "https://www.example.test/evidence/",
-            "text": "A directly inspected source passage.",
+            "text": (
+                "A directly inspected chronicle identifies the Vasco da Gama Pillar and "
+                "documents its historical dedication."
+            ),
         }
     ]
     consensus = AgentRunner._external_answer_consensus(
         consultations,
+        question=(
+            "Which historical pillar does the inspected chronicle identify and document as "
+            "the dedicated monument?"
+        ),
         inspected_pages=pages,
     )
     assert consensus == {
@@ -1396,18 +1403,57 @@ def test_external_answer_consensus_requires_matching_star2_answers_and_opened_ci
 
     assert AgentRunner._external_answer_consensus(
         [{**consultations[0], "model": "gpt-5.6"}, consultations[1]],
+        question="Which historical pillar does the chronicle identify?",
         inspected_pages=pages,
     ) is None
     assert AgentRunner._external_answer_consensus(
         [consultations[0], {**consultations[1], "exact_answer": "A Different Pillar"}],
+        question="Which historical pillar does the chronicle identify?",
         inspected_pages=pages,
     ) is None
     assert AgentRunner._external_answer_consensus(
         consultations,
+        question="Which historical pillar does the chronicle identify?",
         inspected_pages=[],
     ) is None
     assert AgentRunner._external_answer_consensus(
         [consultations[0], {**consultations[1], "request_id": "helper-a"}],
+        question="Which historical pillar does the chronicle identify?",
+        inspected_pages=pages,
+    ) is None
+
+
+def test_external_answer_consensus_rejects_keyword_collision_source() -> None:
+    consultations = [
+        {
+            "ok": True,
+            "status": "succeeded",
+            "model": "frontierrl/star-2",
+            "request_id": f"helper-{index}",
+            "exact_answer": "25",
+            "confidence": 90,
+            "citations": ["https://example.test/unrelated-tour"],
+        }
+        for index in range(2)
+    ]
+    question = (
+        "A meeting of an association founded in the early 1900s included preregistration, a "
+        "refund policy, opening receptions, a war-related play, a tribute to neighborhood "
+        "musical traditions, a presidential roundtable, teaching sessions, a poster session, "
+        "offsite sessions, and past officers from the U.S. Commission on Civil Rights. What "
+        "was the cost of the Latin Music Tour on a weekend day?"
+    )
+    pages = [
+        {
+            "requested_url": "https://example.test/unrelated-tour",
+            "final_url": "https://example.test/unrelated-tour",
+            "title": "Latin Music Tour",
+            "text": "A weekend Latin Music Tour ticket cost 25 dollars.",
+        }
+    ]
+    assert AgentRunner._external_answer_consensus(
+        consultations,
+        question=question,
         inspected_pages=pages,
     ) is None
 
@@ -1594,7 +1640,13 @@ async def test_evidence_backed_star2_consensus_forces_next_star7_final_turn(
         external_model_broker=ConsensusExternalModelBroker(),
         event_sink=events.append,
     )
-    outcome = await runner.run("Question", request_namespace="run:item:consensus")
+    outcome = await runner.run(
+        (
+            "According to a primary chronicle, which candidate answer has entity history and "
+            "origins first documented by an explorer?"
+        ),
+        request_namespace="run:item:consensus",
+    )
     assert outcome.status == "completed"
     assert outcome.exact_answer == "Candidate Answer"
     assert model.calls[2][1]["tool_choice"] == {
