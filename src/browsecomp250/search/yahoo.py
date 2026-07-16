@@ -48,8 +48,6 @@ class YahooSearchProvider(SearchProvider):
                 await self._extend_cooldown()
         response.raise_for_status()
         results = self._parse_html(response.text, count=count, offset=offset)
-        if not results:
-            raise SearchError("Yahoo response contained no usable organic results")
         return results
 
     async def _wait_for_request_slot(self) -> None:

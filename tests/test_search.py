@@ -386,6 +386,34 @@ async def test_yahoo_adapter_unwraps_result_urls(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_yahoo_empty_results_do_not_retry(tmp_path: Path) -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, text="<html><body>No results</body></html>", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = YahooSearchProvider(
+        SearchConfig(
+            provider="yahoo",
+            cache_mode="off",
+            cache_path=tmp_path / "cache.sqlite3",
+            max_retries=4,
+            yahoo_min_interval_seconds=0,
+        ),
+        client,
+    )
+
+    results = await provider.search("an exact query with no matches", count=10)
+
+    assert results == []
+    assert calls == 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_yahoo_adapter_bounds_concurrency_and_cleans_control_tokens(
     tmp_path: Path,
 ) -> None:
